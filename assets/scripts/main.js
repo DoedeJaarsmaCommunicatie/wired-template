@@ -1,14 +1,15 @@
-import $ from 'jquery';
-
+import './bootstrap';
+import Ready from './tools/Ready';
 import Router from './tools/Router';
-import common from './routes/Common';
-import home from './routes/Home';
+
+const common = async () =>
+    (await import(/* webpackChunkName: "dist/scripts/routes/common" */'./routes/Common')).default;
+const home = async () =>
+    (await import(/* webpackChunkName: "dist/scripts/routes/home" */ './routes/Home')).default;
 
 const routes = new Router({
-    common,
-    home
+    common: common(),
+    home: home()
 });
 
-window.routes = routes;
-
-$(document).ready(() => routes.loadEvents());
+Ready(() => routes.loadEvents());
