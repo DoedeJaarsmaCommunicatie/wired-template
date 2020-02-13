@@ -1,3 +1,3 @@
 module.exports = {
-	...require('@elderbraum/prettier-config')
+  ...require('@elderbraum/prettier-config'),
 };

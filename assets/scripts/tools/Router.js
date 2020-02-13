@@ -23,7 +23,7 @@ class Router {
           route,
           fn: event,
         },
-      }),
+      })
     );
 
     Promise.resolve(this.routes[route]).then(res => {
