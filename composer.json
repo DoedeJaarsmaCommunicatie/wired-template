@@ -15,7 +15,7 @@
     "yahnis-elsts/plugin-update-checker": "^4.9"
   },
   "require-dev": {
-    "johnpbloch/wordpress": "^5.4",
+    "johnpbloch/wordpress-core": "^5.4",
     "roave/security-advisories": "dev-master",
     "vimeo/psalm": "^3.11"
   },
