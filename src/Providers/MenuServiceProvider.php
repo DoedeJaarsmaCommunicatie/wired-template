@@ -2,6 +2,7 @@
 namespace App\Providers;
 
 use Timber\Menu;
+use Illuminate\Support\Str;
 use function register_nav_menus;
 
 /**
@@ -9,7 +10,7 @@ use function register_nav_menus;
  *
  * @package App\Providers
  */
-class MenuServiceProvider
+class MenuServiceProvider extends ServiceProvider
 {
     /**
      * The registered menus
@@ -19,15 +20,7 @@ class MenuServiceProvider
     protected $menus = [
         'primary-menu' => 'Primary',
     ];
-    
-    /**
-     * MenuServiceProvider constructor.
-     */
-    public function __construct()
-    {
-        $this->boot();
-    }
-    
+
     /**
      * Register nav menus in timber
      *
@@ -35,11 +28,11 @@ class MenuServiceProvider
      */
     public function boot(): void
     {
-        register_nav_menus($this->menus);
-        
+        register_nav_menus(apply_filters('THEME_SLUG/providers/menus', $this->menus));
+
         add_filter('timber/context', [ $this, 'registerContent' ]);
     }
-    
+
     /**
      * Register nav menu's in twig.
      *
@@ -50,7 +43,7 @@ class MenuServiceProvider
     public function registerContent($content)
     {
         foreach ($this->menus as $key => $name) {
-            $content[ \App\Helpers\Str::camel($key) ] = new Menu($key);
+            $content[ Str::camel($key) ] = new Menu($key);
         }
         return $content;
     }

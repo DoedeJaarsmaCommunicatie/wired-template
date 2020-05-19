@@ -6,6 +6,9 @@ $vendorDir = dirname(dirname(__FILE__));
 $baseDir = dirname($vendorDir);
 
 return array(
+    'johnpbloch\\Composer\\' => array($vendorDir . '/johnpbloch/wordpress-core-installer/src'),
     'Twig_' => array($vendorDir . '/twig/twig/lib'),
     'Routes' => array($vendorDir . '/upstatement/routes'),
+    'LSS' => array($vendorDir . '/openlss/lib-array2xml'),
+    'JsonMapper' => array($vendorDir . '/netresearch/jsonmapper/src'),
 );
