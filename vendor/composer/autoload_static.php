@@ -327,13 +327,6 @@ class ComposerStaticInit3968452acb9f297a841454cfcf4de9ae
     );
 
     public static $prefixesPsr0 = array (
-        'j' => 
-        array (
-            'johnpbloch\\Composer\\' => 
-            array (
-                0 => __DIR__ . '/..' . '/johnpbloch/wordpress-core-installer/src',
-            ),
-        ),
         'T' => 
         array (
             'Twig_' => 
@@ -2918,8 +2911,6 @@ class ComposerStaticInit3968452acb9f297a841454cfcf4de9ae
         'Webmozart\\Glob\\Test\\TestUtil' => __DIR__ . '/..' . '/webmozart/glob/src/Test/TestUtil.php',
         'Webmozart\\PathUtil\\Path' => __DIR__ . '/..' . '/webmozart/path-util/src/Path.php',
         'Webmozart\\PathUtil\\Url' => __DIR__ . '/..' . '/webmozart/path-util/src/Url.php',
-        'johnpbloch\\Composer\\WordPressCoreInstaller' => __DIR__ . '/..' . '/johnpbloch/wordpress-core-installer/src/johnpbloch/Composer/WordPressCoreInstaller.php',
-        'johnpbloch\\Composer\\WordPressCorePlugin' => __DIR__ . '/..' . '/johnpbloch/wordpress-core-installer/src/johnpbloch/Composer/WordPressCorePlugin.php',
         'phpDocumentor\\Reflection\\DocBlock' => __DIR__ . '/..' . '/phpdocumentor/reflection-docblock/src/DocBlock.php',
         'phpDocumentor\\Reflection\\DocBlockFactory' => __DIR__ . '/..' . '/phpdocumentor/reflection-docblock/src/DocBlockFactory.php',
         'phpDocumentor\\Reflection\\DocBlockFactoryInterface' => __DIR__ . '/..' . '/phpdocumentor/reflection-docblock/src/DocBlockFactoryInterface.php',

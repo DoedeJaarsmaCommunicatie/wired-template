@@ -2559,8 +2559,6 @@ return array(
     'Webmozart\\Glob\\Test\\TestUtil' => $vendorDir . '/webmozart/glob/src/Test/TestUtil.php',
     'Webmozart\\PathUtil\\Path' => $vendorDir . '/webmozart/path-util/src/Path.php',
     'Webmozart\\PathUtil\\Url' => $vendorDir . '/webmozart/path-util/src/Url.php',
-    'johnpbloch\\Composer\\WordPressCoreInstaller' => $vendorDir . '/johnpbloch/wordpress-core-installer/src/johnpbloch/Composer/WordPressCoreInstaller.php',
-    'johnpbloch\\Composer\\WordPressCorePlugin' => $vendorDir . '/johnpbloch/wordpress-core-installer/src/johnpbloch/Composer/WordPressCorePlugin.php',
     'phpDocumentor\\Reflection\\DocBlock' => $vendorDir . '/phpdocumentor/reflection-docblock/src/DocBlock.php',
     'phpDocumentor\\Reflection\\DocBlockFactory' => $vendorDir . '/phpdocumentor/reflection-docblock/src/DocBlockFactory.php',
     'phpDocumentor\\Reflection\\DocBlockFactoryInterface' => $vendorDir . '/phpdocumentor/reflection-docblock/src/DocBlockFactoryInterface.php',

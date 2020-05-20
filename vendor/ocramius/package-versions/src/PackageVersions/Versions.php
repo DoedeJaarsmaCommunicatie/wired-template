@@ -67,9 +67,7 @@ final class Versions
   'composer/xdebug-handler' => '1.4.1@1ab9842d69e64fb3a01be6b656501032d1b78cb7',
   'felixfbecker/advanced-json-rpc' => 'v3.1.1@0ed363f8de17d284d479ec813c9ad3f6834b5c40',
   'felixfbecker/language-server-protocol' => 'v1.4.0@378801f6139bb74ac215d81cca1272af61df9a9f',
-  'johnpbloch/wordpress' => '5.4.1@2cdacd2a14c9960bcd86d8b4d7b1f211b3e77684',
   'johnpbloch/wordpress-core' => '5.4.1@4639993365dbb3c935d420df22f84c136d9ef4d1',
-  'johnpbloch/wordpress-core-installer' => '1.0.2@fd12f5cfe27223b92b0f4bbc097059eb23cc56c4',
   'netresearch/jsonmapper' => 'v2.1.0@e0f1e33a71587aca81be5cffbb9746510e1fe04e',
   'ocramius/package-versions' => '1.8.0@421679846270a5772534828013a93be709fb13df',
   'openlss/lib-array2xml' => '1.0.0@a91f18a8dfc69ffabe5f9b068bc39bb202c81d90',
@@ -85,7 +83,7 @@ final class Versions
   'webmozart/assert' => '1.8.0@ab2cb0b3b559010b75981b1bdce728da3ee90ad6',
   'webmozart/glob' => '4.1.0@3cbf63d4973cf9d780b93d2da8eec7e4a9e63bbe',
   'webmozart/path-util' => '2.3.0@d939f7edc24c9a1bb9c0dee5cb05d8e859490725',
-  '__root__' => 'dev-master@81789e4d79692f8b4f4d42939dabb1621637b0b3',
+  '__root__' => 'dev-master@d6b50715ac7288e2dfd4093ef6ebf9d0de70e63b',
 );
 
     private function __construct()

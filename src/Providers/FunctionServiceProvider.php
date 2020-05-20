@@ -4,9 +4,6 @@ namespace App\Providers;
 
 use Twig\Environment;
 use Twig\TwigFunction;
-use App\Controllers\TwigFunctions\CustomizerHelper;
-use App\Controllers\TwigFunctions\ProductCategoryUrl;
-use App\Controllers\TwigFunctions\WooCommerceGeneral;
 
 class FunctionServiceProvider extends ServiceProvider
 {

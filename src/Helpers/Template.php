@@ -1,6 +1,8 @@
 <?php
 namespace App\Helpers;
 
+use Illuminate\Support\Str;
+
 class Template
 {
     /**
@@ -15,7 +17,7 @@ class Template
     {
         return static::getFile('views/', $name, $extension);
     }
-    
+
     /**
      * Returns a view .html.twig file
      *
@@ -27,7 +29,7 @@ class Template
     {
         return static::viewFile($name, '.html.twig');
     }
-    
+
     /**
      * Returns a view .twig file
      *
@@ -39,7 +41,7 @@ class Template
     {
         return static::viewFile($name, 'twig');
     }
-    
+
     /**
      * Returns a partial .html.twig file
      *
@@ -52,7 +54,7 @@ class Template
     {
         return static::getFile('partials/', $name, $extension);
     }
-    
+
     /**
      * Returns a partial .html.twig file
      *
@@ -64,7 +66,7 @@ class Template
     {
         return static::partialFile($name, '.html.twig');
     }
-    
+
     /**
      * Returns a partial .twig file
      *
@@ -76,7 +78,7 @@ class Template
     {
         return static::partialFile($name, 'twig');
     }
-    
+
     /**
      * Returns a file
      *
@@ -93,7 +95,7 @@ class Template
         if (!Str::startsWith($extension, '.')) {
             $extension = Str::start($extension, '.');
         }
-    
+
         if (is_array($name)) {
             $name = array_map(static function ($loc) use ($extension, $dir_prefix) {
                 if (!Str::startsWith($loc, $dir_prefix)) {
@@ -112,7 +114,7 @@ class Template
                 $name .= $extension;
             }
         }
-    
+
         return $name;
     }
 }

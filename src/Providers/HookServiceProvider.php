@@ -3,6 +3,8 @@
 namespace App\Providers;
 
 use App\Bootstrap\Container;
+use App\Controllers\Hooks\Actions\Action;
+use App\Controllers\Hooks\Filters\Filter;
 
 class HookServiceProvider extends ServiceProvider
 {
