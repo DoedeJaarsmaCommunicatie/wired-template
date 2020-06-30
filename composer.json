@@ -1,8 +1,7 @@
 {
   "require": {
-    "php": ">=7.2 <=8",
+    "php": ">=7.3 <=8",
     "aristath/kirki": "^3.1",
-    "brainmaestro/composer-git-hooks": "^2.8",
     "dusank/knapsack": "^10.0",
     "htmlburger/carbon-fields": "^3.1",
     "jjgrainger/posttypes": "^2.0",
@@ -32,21 +31,5 @@
   "config": {
     "optimize-autoloader": true,
     "sort-packages": true
-  },
-  "scripts": {
-    "cghooks": "vendor/bin/cghooks",
-    "post-install-cmd": "cghooks add --ignore-lock",
-    "post-update-cmd": "cghooks update",
-    "pre-commit": [
-      "echo committing as $(git config user.name)",
-      "composer update --no-dev"
-    ],
-    "post-push": [
-      "echo reverting composer to development",
-      "composer update"
-    ],
-    "post-merge": [
-      "composer update"
-    ]
   }
 }

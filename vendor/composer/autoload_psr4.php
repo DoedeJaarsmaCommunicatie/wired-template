@@ -49,7 +49,6 @@ return array(
     'Composer\\Installers\\' => array($vendorDir . '/composer/installers/src/Composer/Installers'),
     'Carbon_Fields\\' => array($vendorDir . '/htmlburger/carbon-fields/core'),
     'Carbon\\' => array($vendorDir . '/nesbot/carbon/src/Carbon'),
-    'BrainMaestro\\GitHooks\\' => array($vendorDir . '/brainmaestro/composer-git-hooks/src'),
     'App\\' => array($baseDir . '/src'),
     'Amp\\ByteStream\\' => array($vendorDir . '/amphp/byte-stream/lib'),
     'Amp\\' => array($vendorDir . '/amphp/amp/lib'),

@@ -12,17 +12,16 @@ class ComposerStaticInit3968452acb9f297a841454cfcf4de9ae
         'a4a119a56e50fbb293281d9a48007e0e' => __DIR__ . '/..' . '/symfony/polyfill-php80/bootstrap.php',
         '8825ede83f2f289127722d4e842cf7e8' => __DIR__ . '/..' . '/symfony/polyfill-intl-grapheme/bootstrap.php',
         'e69f7f6ee287b969198c3c9d6777bd38' => __DIR__ . '/..' . '/symfony/polyfill-intl-normalizer/bootstrap.php',
-        '0d59ee240a4cd96ddbb4ff164fccea4d' => __DIR__ . '/..' . '/symfony/polyfill-php73/bootstrap.php',
-        'b6b991a57620e2fb6b2f66f03fe9ddc2' => __DIR__ . '/..' . '/symfony/string/Resources/functions.php',
         'e8aa6e4b5a1db2f56ae794f1505391a8' => __DIR__ . '/..' . '/amphp/amp/lib/functions.php',
         '76cd0796156622033397994f25b0d8fc' => __DIR__ . '/..' . '/amphp/amp/lib/Internal/functions.php',
+        '0d59ee240a4cd96ddbb4ff164fccea4d' => __DIR__ . '/..' . '/symfony/polyfill-php73/bootstrap.php',
+        'b6b991a57620e2fb6b2f66f03fe9ddc2' => __DIR__ . '/..' . '/symfony/string/Resources/functions.php',
         '6cd5651c4fef5ed6b63e8d8b8ffbf3cc' => __DIR__ . '/..' . '/amphp/byte-stream/lib/functions.php',
         'dc51568953534d6c54b08731e61104e2' => __DIR__ . '/..' . '/vimeo/psalm/src/functions.php',
         '8e4171839e12546525126d38dac3dafa' => __DIR__ . '/..' . '/vimeo/psalm/src/spl_object_id.php',
         '72579e7bd17821bb1321b87411366eae' => __DIR__ . '/..' . '/illuminate/support/helpers.php',
         '538ca81a9a966a6716601ecf48f4eaef' => __DIR__ . '/..' . '/opis/closure/functions.php',
         '6e3fae29631ef280660b3cdad06f25a8' => __DIR__ . '/..' . '/symfony/deprecation-contracts/function.php',
-        '3f0c6f4bac8ae6c17da37dc6e8bc91b4' => __DIR__ . '/..' . '/brainmaestro/composer-git-hooks/src/helpers.php',
         '5d9c5be1aa1fbc12016e2c5bd16bbc70' => __DIR__ . '/..' . '/dusank/knapsack/src/collection_functions.php',
         'e5fde315a98ded36f9b25eb160f6c9fc' => __DIR__ . '/..' . '/dusank/knapsack/src/utility_functions.php',
         '17d016dc52a631c1e74d2eb8fdd57342' => __DIR__ . '/..' . '/laravel/helpers/src/helpers.php',
@@ -111,10 +110,6 @@ class ComposerStaticInit3968452acb9f297a841454cfcf4de9ae
             'Composer\\Installers\\' => 20,
             'Carbon_Fields\\' => 14,
             'Carbon\\' => 7,
-        ),
-        'B' => 
-        array (
-            'BrainMaestro\\GitHooks\\' => 22,
         ),
         'A' => 
         array (
@@ -300,10 +295,6 @@ class ComposerStaticInit3968452acb9f297a841454cfcf4de9ae
         array (
             0 => __DIR__ . '/..' . '/nesbot/carbon/src/Carbon',
         ),
-        'BrainMaestro\\GitHooks\\' => 
-        array (
-            0 => __DIR__ . '/..' . '/brainmaestro/composer-git-hooks/src',
-        ),
         'App\\' => 
         array (
             0 => __DIR__ . '/../..' . '/src',
@@ -459,13 +450,6 @@ class ComposerStaticInit3968452acb9f297a841454cfcf4de9ae
         'Asm89\\Twig\\CacheExtension\\Extension' => __DIR__ . '/..' . '/asm89/twig-cache-extension/lib/Asm89/Twig/CacheExtension/Extension.php',
         'Asm89\\Twig\\CacheExtension\\Node\\CacheNode' => __DIR__ . '/..' . '/asm89/twig-cache-extension/lib/Asm89/Twig/CacheExtension/Node/CacheNode.php',
         'Asm89\\Twig\\CacheExtension\\TokenParser\\Cache' => __DIR__ . '/..' . '/asm89/twig-cache-extension/lib/Asm89/Twig/CacheExtension/TokenParser/Cache.php',
-        'BrainMaestro\\GitHooks\\Commands\\AddCommand' => __DIR__ . '/..' . '/brainmaestro/composer-git-hooks/src/Commands/AddCommand.php',
-        'BrainMaestro\\GitHooks\\Commands\\Command' => __DIR__ . '/..' . '/brainmaestro/composer-git-hooks/src/Commands/Command.php',
-        'BrainMaestro\\GitHooks\\Commands\\HookCommand' => __DIR__ . '/..' . '/brainmaestro/composer-git-hooks/src/Commands/HookCommand.php',
-        'BrainMaestro\\GitHooks\\Commands\\ListCommand' => __DIR__ . '/..' . '/brainmaestro/composer-git-hooks/src/Commands/ListCommand.php',
-        'BrainMaestro\\GitHooks\\Commands\\RemoveCommand' => __DIR__ . '/..' . '/brainmaestro/composer-git-hooks/src/Commands/RemoveCommand.php',
-        'BrainMaestro\\GitHooks\\Commands\\UpdateCommand' => __DIR__ . '/..' . '/brainmaestro/composer-git-hooks/src/Commands/UpdateCommand.php',
-        'BrainMaestro\\GitHooks\\Hook' => __DIR__ . '/..' . '/brainmaestro/composer-git-hooks/src/Hook.php',
         'Carbon\\Carbon' => __DIR__ . '/..' . '/nesbot/carbon/src/Carbon/Carbon.php',
         'Carbon\\CarbonImmutable' => __DIR__ . '/..' . '/nesbot/carbon/src/Carbon/CarbonImmutable.php',
         'Carbon\\CarbonInterface' => __DIR__ . '/..' . '/nesbot/carbon/src/Carbon/CarbonInterface.php',
