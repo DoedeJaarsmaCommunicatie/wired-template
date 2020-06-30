@@ -12,7 +12,6 @@ class AppServiceProvider extends ServiceProvider
 	{
 		$providers = include get_stylesheet_directory() . '/src/config/app.php';
 		$this->providers = apply_filters('THEME_SLUG/app/register-providers/providers', $providers['providers']);
-		$this->boot();
 	}
 
 	public function register(): void
@@ -22,7 +21,9 @@ class AppServiceProvider extends ServiceProvider
 				do_action('THEME_SLUG/app/register-providers/register/' . (new \ReflectionClass($provider))->getShortName());
 			} catch (\ReflectionException $exception) {
 				Log::warning('Reflection error while registering providers', ['class' => $provider]);
+				return;
 			}
-			Container::get($provider);		}
+			Container::get($provider);
+		}
 	}
 }
