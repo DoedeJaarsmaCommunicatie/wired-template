@@ -43,7 +43,7 @@ class ArrayAssignmentAnalyzer
         StatementsAnalyzer $statements_analyzer,
         PhpParser\Node\Expr\ArrayDimFetch $stmt,
         Context $context,
-        $assign_value,
+        ?PhpParser\Node\Expr $assign_value,
         Type\Union $assignment_value_type
     ) {
         $nesting = 0;
@@ -122,8 +122,6 @@ class ArrayAssignmentAnalyzer
                     // fall through
                 }
             }
-
-            return null;
         }
 
         $child_stmts = array_reverse($child_stmts);
@@ -182,15 +180,15 @@ class ArrayAssignmentAnalyzer
                        && $child_stmt_dim_type->isSingleStringLiteral())
                 ) {
                     if ($child_stmt->dim instanceof PhpParser\Node\Scalar\String_) {
-                        $dim_value = $child_stmt->dim->value;
+                        $dim_value = new Type\Atomic\TLiteralString($child_stmt->dim->value);
                     } else {
-                        $dim_value = $child_stmt_dim_type->getSingleStringLiteral()->value;
+                        $dim_value = $child_stmt_dim_type->getSingleStringLiteral();
                     }
 
-                    if (preg_match('/^(0|[1-9][0-9]*)$/', $dim_value)) {
-                        $var_id_additions[] = '[' . $dim_value . ']';
+                    if (preg_match('/^(0|[1-9][0-9]*)$/', $dim_value->value)) {
+                        $var_id_additions[] = '[' . $dim_value->value . ']';
                     } else {
-                        $var_id_additions[] = '[\'' . $dim_value . '\']';
+                        $var_id_additions[] = '[\'' . $dim_value->value . '\']';
                     }
                 } elseif ($child_stmt->dim instanceof PhpParser\Node\Scalar\LNumber
                     || (($child_stmt->dim instanceof PhpParser\Node\Expr\ConstFetch
@@ -198,12 +196,12 @@ class ArrayAssignmentAnalyzer
                         && $child_stmt_dim_type->isSingleIntLiteral())
                 ) {
                     if ($child_stmt->dim instanceof PhpParser\Node\Scalar\LNumber) {
-                        $dim_value = $child_stmt->dim->value;
+                        $dim_value = new Type\Atomic\TLiteralInt($child_stmt->dim->value);
                     } else {
-                        $dim_value = $child_stmt_dim_type->getSingleIntLiteral()->value;
+                        $dim_value = $child_stmt_dim_type->getSingleIntLiteral();
                     }
 
-                    $var_id_additions[] = '[' . $dim_value . ']';
+                    $var_id_additions[] = '[' . $dim_value->value . ']';
                 } elseif ($child_stmt->dim instanceof PhpParser\Node\Expr\Variable
                     && is_string($child_stmt->dim->name)
                 ) {
@@ -303,7 +301,7 @@ class ArrayAssignmentAnalyzer
                     $array_type,
                     $assignment_type,
                     $array_var_id,
-                    $dim_value
+                    $dim_value !== null ? [$dim_value] : []
                 );
             }
 
@@ -340,69 +338,38 @@ class ArrayAssignmentAnalyzer
                 throw new \InvalidArgumentException('Should never get here');
             }
 
-            $key_value = null;
+            $key_values = [];
 
-            if ($current_dim instanceof PhpParser\Node\Scalar\String_
-                || $current_dim instanceof PhpParser\Node\Scalar\LNumber
-            ) {
-                $key_value = $current_dim->value;
-            } elseif ($current_dim instanceof PhpParser\Node\Expr\ConstFetch
+            if ($current_dim instanceof PhpParser\Node\Scalar\String_) {
+                $key_values[] = new Type\Atomic\TLiteralString($current_dim->value);
+            } elseif ($current_dim instanceof PhpParser\Node\Scalar\LNumber) {
+                $key_values[] = new Type\Atomic\TLiteralInt($current_dim->value);
+            } elseif ($current_dim
                 && ($current_dim_type = $statements_analyzer->node_data->getType($current_dim))
             ) {
-                $is_single_string_literal = $current_dim_type->isSingleStringLiteral();
+                $string_literals = $current_dim_type->getLiteralStrings();
+                $int_literals = $current_dim_type->getLiteralInts();
 
-                if ($is_single_string_literal || $current_dim_type->isSingleIntLiteral()) {
-                    if ($is_single_string_literal) {
-                        $key_value = $current_dim_type->getSingleStringLiteral()->value;
-                    } else {
-                        $key_value = $current_dim_type->getSingleIntLiteral()->value;
+                $all_atomic_types = $current_dim_type->getAtomicTypes();
+
+                if (count($string_literals) + count($int_literals) === count($all_atomic_types)) {
+                    foreach ($string_literals as $string_literal) {
+                        $key_values[] = clone $string_literal;
+                    }
+
+                    foreach ($int_literals as $int_literal) {
+                        $key_values[] = clone $int_literal;
                     }
                 }
             }
 
-            if ($key_value !== null) {
-                $has_matching_objectlike_property = false;
-                $has_matching_string = false;
-
-                foreach ($child_stmt_type->getAtomicTypes() as $type) {
-                    if ($type instanceof ObjectLike) {
-                        if (isset($type->properties[$key_value])) {
-                            $has_matching_objectlike_property = true;
-
-                            $type->properties[$key_value] = clone $current_type;
-                        }
-                    }
-
-                    if ($type instanceof Type\Atomic\TString && \is_int($key_value)) {
-                        $has_matching_string = true;
-
-                        if ($type instanceof Type\Atomic\TLiteralString
-                            && $current_type->isSingleStringLiteral()
-                        ) {
-                            $new_char = $current_type->getSingleStringLiteral()->value;
-
-                            if (\strlen($new_char) === 1) {
-                                $type->value[0] = $new_char;
-                            }
-                        }
-                    }
-                }
-
-                if (!$has_matching_objectlike_property && !$has_matching_string) {
-                    $array_assignment_type = new Type\Union([
-                        new ObjectLike([$key_value => $current_type]),
-                    ]);
-
-                    $new_child_type = Type::combineUnionTypes(
-                        $child_stmt_type,
-                        $array_assignment_type,
-                        $codebase,
-                        true,
-                        true
-                    );
-                } else {
-                    $new_child_type = $child_stmt_type; // noop
-                }
+            if ($key_values) {
+                $new_child_type = self::updateTypeWithKeyValues(
+                    $codebase,
+                    $child_stmt_type,
+                    $current_type,
+                    $key_values
+                );
             } else {
                 if (!$current_dim) {
                     $array_assignment_type = new Type\Union([
@@ -458,74 +425,45 @@ class ArrayAssignmentAnalyzer
                     $statements_analyzer->node_data->getType($child_stmt->var) ?: Type::getMixed(),
                     $new_child_type,
                     $array_var_id,
-                    $key_value
+                    $key_values
                 );
             }
         }
 
         $root_is_string = $root_type->isString();
-        $key_value = null;
+        $key_values = [];
 
-        if ($current_dim instanceof PhpParser\Node\Scalar\String_
-            || ($current_dim instanceof PhpParser\Node\Scalar\LNumber && !$root_is_string)
-        ) {
-            $key_value = $current_dim->value;
-        } elseif ($current_dim instanceof PhpParser\Node\Expr\ConstFetch
+        if ($current_dim instanceof PhpParser\Node\Scalar\String_) {
+            $key_values[] = new Type\Atomic\TLiteralString($current_dim->value);
+        } elseif ($current_dim instanceof PhpParser\Node\Scalar\LNumber && !$root_is_string) {
+            $key_values[] = new Type\Atomic\TLiteralInt($current_dim->value);
+        } elseif ($current_dim
             && ($current_dim_type = $statements_analyzer->node_data->getType($current_dim))
             && !$root_is_string
         ) {
-            $is_single_string_literal = $current_dim_type->isSingleStringLiteral();
+            $string_literals = $current_dim_type->getLiteralStrings();
+            $int_literals = $current_dim_type->getLiteralInts();
 
-            if ($is_single_string_literal || $current_dim_type->isSingleIntLiteral()) {
-                if ($is_single_string_literal) {
-                    $key_value = $current_dim_type->getSingleStringLiteral()->value;
-                } else {
-                    $key_value = $current_dim_type->getSingleIntLiteral()->value;
+            $all_atomic_types = $current_dim_type->getAtomicTypes();
+
+            if (count($string_literals) + count($int_literals) === count($all_atomic_types)) {
+                foreach ($string_literals as $string_literal) {
+                    $key_values[] = clone $string_literal;
+                }
+
+                foreach ($int_literals as $int_literal) {
+                    $key_values[] = clone $int_literal;
                 }
             }
         }
 
-        if ($key_value !== null) {
-            $has_matching_objectlike_property = false;
-
-            foreach ($root_type->getAtomicTypes() as $type) {
-                if ($type instanceof ObjectLike) {
-                    if (isset($type->properties[$key_value])) {
-                        $has_matching_objectlike_property = true;
-
-                        $type->properties[$key_value] = clone $current_type;
-                    }
-                } elseif ($type instanceof TNonEmptyList && $key_value === 0) {
-                    $has_matching_objectlike_property = true;
-
-                    $type->type_param = Type::combineUnionTypes(
-                        clone $current_type,
-                        $type->type_param,
-                        $codebase,
-                        true,
-                        false
-                    );
-                }
-            }
-
-            if (!$has_matching_objectlike_property) {
-                $object_like = new ObjectLike([$key_value => $current_type]);
-                $object_like->sealed = true;
-
-                $array_assignment_type = new Type\Union([
-                    $object_like,
-                ]);
-
-                $new_child_type = Type::combineUnionTypes(
-                    $root_type,
-                    $array_assignment_type,
-                    $codebase,
-                    true,
-                    false
-                );
-            } else {
-                $new_child_type = $root_type; // noop
-            }
+        if ($key_values) {
+            $new_child_type = self::updateTypeWithKeyValues(
+                $codebase,
+                $root_type,
+                $current_type,
+                $key_values
+            );
         } elseif (!$root_is_string) {
             if ($current_dim) {
                 if ($current_dim_type = $statements_analyzer->node_data->getType($current_dim)) {
@@ -544,7 +482,6 @@ class ArrayAssignmentAnalyzer
                     && $child_stmt
                     && $parent_var_id
                     && ($parent_type = $context->vars_in_scope[$parent_var_id] ?? null)
-
                 ) {
                     if ($parent_type->hasList()) {
                         $array_atomic_type = new TNonEmptyList(
@@ -744,7 +681,100 @@ class ArrayAssignmentAnalyzer
     }
 
     /**
-     * @param int|string|null $item_key_value
+     * @param non-empty-list<Type\Atomic\TLiteralInt|Type\Atomic\TLiteralString> $key_values
+     */
+    private static function updateTypeWithKeyValues(
+        \Psalm\Codebase $codebase,
+        Type\Union $child_stmt_type,
+        Type\Union $current_type,
+        array $key_values
+    ) : Type\Union {
+        $has_matching_objectlike_property = false;
+        $has_matching_string = false;
+
+        foreach ($child_stmt_type->getAtomicTypes() as $type) {
+            foreach ($key_values as $key_value) {
+                if ($type instanceof ObjectLike) {
+                    if (isset($type->properties[$key_value->value])) {
+                        $has_matching_objectlike_property = true;
+
+                        $type->properties[$key_value->value] = clone $current_type;
+                    }
+                } elseif ($type instanceof Type\Atomic\TString
+                    && $key_value instanceof Type\Atomic\TLiteralInt
+                ) {
+                    $has_matching_string = true;
+
+                    if ($type instanceof Type\Atomic\TLiteralString
+                        && $current_type->isSingleStringLiteral()
+                    ) {
+                        $new_char = $current_type->getSingleStringLiteral()->value;
+
+                        if (\strlen($new_char) === 1) {
+                            $type->value[0] = $new_char;
+                        }
+                    }
+                } elseif ($type instanceof TNonEmptyList
+                    && $key_value instanceof Type\Atomic\TLiteralInt
+                    && ($key_value->value === $key_value->value || $key_value->value < $type->count)
+                    && count($key_values) === 1
+                ) {
+                    $has_matching_objectlike_property = true;
+
+                    $type->type_param = Type::combineUnionTypes(
+                        clone $current_type,
+                        $type->type_param,
+                        $codebase,
+                        true,
+                        false
+                    );
+                }
+            }
+        }
+
+        $child_stmt_type->bustCache();
+
+        if (!$has_matching_objectlike_property && !$has_matching_string) {
+            if (count($key_values) === 1) {
+                $key_value = $key_values[0];
+
+                $object_like = new ObjectLike(
+                    [$key_value->value => clone $current_type],
+                    $key_value instanceof Type\Atomic\TLiteralClassString
+                        ? [(string) $key_value->value => true]
+                        : null
+                );
+
+                $object_like->sealed = true;
+
+                $array_assignment_type = new Type\Union([
+                    $object_like,
+                ]);
+            } else {
+                $array_assignment_literals = $key_values;
+
+                $array_assignment_type = new Type\Union([
+                    new Type\Atomic\TNonEmptyArray([
+                        new Type\Union($array_assignment_literals),
+                        clone $current_type
+                    ])
+                ]);
+            }
+
+            return Type::combineUnionTypes(
+                $child_stmt_type,
+                $array_assignment_type,
+                $codebase,
+                true,
+                false
+            );
+        }
+
+        return $child_stmt_type;
+    }
+
+    /**
+     * @param list<Type\Atomic\TLiteralInt|Type\Atomic\TLiteralString> $key_values $key_values
      */
     private static function taintArrayAssignment(
         StatementsAnalyzer $statements_analyzer,
@@ -752,12 +782,13 @@ class ArrayAssignmentAnalyzer
         Type\Union $stmt_type,
         Type\Union $child_stmt_type,
         ?string $array_var_id,
-        $item_key_value
+        array $key_values
     ) : void {
         $codebase = $statements_analyzer->getCodebase();
 
         if ($codebase->taint
             && $child_stmt_type->parent_nodes
+            && !\in_array('TaintedInput', $statements_analyzer->getSuppressedIssues())
         ) {
             $var_location = new \Psalm\CodeLocation($statements_analyzer->getSource(), $stmt);
 
@@ -769,12 +800,21 @@ class ArrayAssignmentAnalyzer
             $codebase->taint->addTaintNode($new_parent_node);
 
             foreach ($child_stmt_type->parent_nodes as $parent_node) {
-                $codebase->taint->addPath(
-                    $parent_node,
-                    $new_parent_node,
-                    'array-assignment'
-                        . ($item_key_value !== null ? '-\'' . $item_key_value . '\'' : '')
-                );
+                if ($key_values) {
+                    foreach ($key_values as $key_value) {
+                        $codebase->taint->addPath(
+                            $parent_node,
+                            $new_parent_node,
+                            'array-assignment-\'' . $key_value->value . '\''
+                        );
+                    }
+                } else {
+                    $codebase->taint->addPath(
+                        $parent_node,
+                        $new_parent_node,
+                        'array-assignment'
+                    );
+                }
             }
 
             $stmt_type->parent_nodes[] = $new_parent_node;

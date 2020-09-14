@@ -13,13 +13,13 @@ use const PHP_EOL;
 use PhpParser;
 use function preg_match;
 use function preg_replace;
-use Psalm\Aliases;
 use Psalm\CodeLocation;
 use Psalm\Config;
 use Psalm\Exception\UnpopulatedClasslikeException;
 use Psalm\Internal\Analyzer\ClassLikeAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\Fetch\ConstFetchAnalyzer;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
+use Psalm\Internal\FileManipulation\ClassDocblockManipulator;
 use Psalm\Internal\Provider\ClassLikeStorageProvider;
 use Psalm\Internal\Provider\FileReferenceProvider;
 use Psalm\Internal\Provider\StatementsProvider;
@@ -40,7 +40,6 @@ use function strlen;
 use function strrpos;
 use function strtolower;
 use function substr;
-use Psalm\Internal\Scanner\UnresolvedConstantComponent;
 
 /**
  * @internal
@@ -155,7 +154,7 @@ class ClassLikes
 
         foreach ($predefined_classes as $predefined_class) {
             $predefined_class = preg_replace('/^\\\/', '', $predefined_class);
-            /** @psalm-suppress TypeCoercion */
+            /** @psalm-suppress ArgumentTypeCoercion */
             $reflection_class = new \ReflectionClass($predefined_class);
 
             if (!$reflection_class->isUserDefined()) {
@@ -171,7 +170,7 @@ class ClassLikes
 
         foreach ($predefined_interfaces as $predefined_interface) {
             $predefined_interface = preg_replace('/^\\\/', '', $predefined_interface);
-            /** @psalm-suppress TypeCoercion */
+            /** @psalm-suppress ArgumentTypeCoercion */
             $reflection_class = new \ReflectionClass($predefined_interface);
 
             if (!$reflection_class->isUserDefined()) {
@@ -342,7 +341,7 @@ class ClassLikes
         ) {
             if ((
                 !isset($this->existing_classes_lc[$fq_class_name_lc])
-                    || $this->existing_classes_lc[$fq_class_name_lc] === true
+                    || $this->existing_classes_lc[$fq_class_name_lc]
                 )
                 && !$this->classlike_storage_provider->has($fq_class_name_lc)
             ) {
@@ -391,7 +390,7 @@ class ClassLikes
         ) {
             if ((
                 !isset($this->existing_classes_lc[$fq_class_name_lc])
-                    || $this->existing_classes_lc[$fq_class_name_lc] === true
+                    || $this->existing_classes_lc[$fq_class_name_lc]
                 )
                 && !$this->classlike_storage_provider->has($fq_class_name_lc)
             ) {
@@ -685,10 +684,6 @@ class ClassLikes
             return true;
         }
 
-        if (isset($this->classlike_aliases[strtolower($fq_interface_name)])) {
-            return true;
-        }
-
         return isset($this->existing_interfaces[$fq_interface_name]);
     }
 
@@ -735,7 +730,7 @@ class ClassLikes
             throw new \UnexpectedValueException('Storage should exist for ' . $fq_trait_name);
         }
 
-        $file_statements = $this->statements_provider->getStatementsForFile($storage->location->file_path);
+        $file_statements = $this->statements_provider->getStatementsForFile($storage->location->file_path, '7.4');
 
         $trait_finder = new \Psalm\Internal\PhpVisitor\TraitFinder($fq_trait_name);
 
@@ -790,6 +785,9 @@ class ClassLikes
 
         $progress->debug('Checking class references' . PHP_EOL);
 
+        $project_analyzer = \Psalm\Internal\Analyzer\ProjectAnalyzer::getInstance();
+        $codebase = $project_analyzer->getCodebase();
+
         foreach ($this->existing_classlikes_lc as $fq_class_name_lc => $_) {
             try {
                 $classlike_storage = $this->classlike_storage_provider->get($fq_class_name_lc);
@@ -820,8 +818,59 @@ class ClassLikes
                 }
 
                 $this->findPossibleMethodParamTypes($classlike_storage);
+
+                if ($codebase->alter_code
+                    && isset($project_analyzer->getIssuesToFix()['MissingImmutableAnnotation'])
+                    && !isset($codebase->analyzer->mutable_classes[$fq_class_name_lc])
+                    && !$classlike_storage->external_mutation_free
+                    && $classlike_storage->properties
+                    && isset($classlike_storage->methods['__construct'])
+                ) {
+                    $stmts = $codebase->getStatementsForFile(
+                        $classlike_storage->location->file_path
+                    );
+
+                    foreach ($stmts as $stmt) {
+                        if ($stmt instanceof PhpParser\Node\Stmt\Namespace_) {
+                            foreach ($stmt->stmts as $namespace_stmt) {
+                                if ($namespace_stmt instanceof PhpParser\Node\Stmt\Class_
+                                    && \strtolower((string) $stmt->name . '\\' . (string) $namespace_stmt->name)
+                                        === $fq_class_name_lc
+                                ) {
+                                    self::makeImmutable(
+                                        $namespace_stmt,
+                                        $project_analyzer,
+                                        $classlike_storage->location->file_path
+                                    );
+                                }
+                            }
+                        } elseif ($stmt instanceof PhpParser\Node\Stmt\Class_
+                            && \strtolower((string) $stmt->name) === $fq_class_name_lc
+                        ) {
+                            self::makeImmutable(
+                                $stmt,
+                                $project_analyzer,
+                                $classlike_storage->location->file_path
+                            );
+                        }
+                    }
+                }
             }
         }
+    }
+
+    public function makeImmutable(
+        PhpParser\Node\Stmt\Class_ $class_stmt,
+        \Psalm\Internal\Analyzer\ProjectAnalyzer $project_analyzer,
+        string $file_path
+    ) : void {
+        $manipulator = ClassDocblockManipulator::getForClass(
+            $project_analyzer,
+            $file_path,
+            $class_stmt
+        );
+
+        $manipulator->makeImmutable();
     }
 
     /**
@@ -1170,7 +1219,7 @@ class ClassLikes
                 unset($uses_flipped[$old_fq_class_name]);
                 $old_class_name_parts = explode('\\', $old_fq_class_name);
                 $old_class_name = end($old_class_name_parts);
-                if (strtolower($old_class_name) === strtolower($alias)) {
+                if ($old_class_name === strtolower($alias)) {
                     $new_class_name_parts = explode('\\', $new_fq_class_name);
                     $new_class_name = end($new_class_name_parts);
                     $uses_flipped[strtolower($new_fq_class_name)] = $new_class_name;
@@ -1327,7 +1376,7 @@ class ClassLikes
                     unset($uses_flipped[$old_fq_class_name]);
                     $old_class_name_parts = explode('\\', $old_fq_class_name);
                     $old_class_name = end($old_class_name_parts);
-                    if (strtolower($old_class_name) === strtolower($alias)) {
+                    if ($old_class_name === strtolower($alias)) {
                         $new_class_name_parts = explode('\\', $new_fq_class_name);
                         $new_class_name = end($new_class_name_parts);
                         $uses_flipped[strtolower($new_fq_class_name)] = $new_class_name;

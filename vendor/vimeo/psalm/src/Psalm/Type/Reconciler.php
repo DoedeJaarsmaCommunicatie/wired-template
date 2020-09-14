@@ -50,6 +50,8 @@ use function strpos;
 use function strtolower;
 use function substr;
 use Exception;
+use function preg_match;
+use function preg_quote;
 
 class Reconciler
 {
@@ -265,6 +267,25 @@ class Reconciler
                 $orred_type = null;
 
                 foreach ($new_type_part_parts as $new_type_part_part) {
+                    if ($new_type_part_part[0] === '>') {
+                        /** @var array<string, array<array<string>>> */
+                        $data = \json_decode(substr($new_type_part_part, 1), true);
+
+                        $existing_types = self::reconcileKeyedTypes(
+                            $data,
+                            $data,
+                            $existing_types,
+                            $changed_var_ids,
+                            $referenced_var_ids,
+                            $statements_analyzer,
+                            $template_type_map,
+                            $inside_loop,
+                            $code_location
+                        );
+
+                        $new_type_part_part = '!falsy';
+                    }
+
                     $result_type_candidate = AssertionReconciler::reconcile(
                         $new_type_part_part,
                         $result_type ? clone $result_type : null,
@@ -305,6 +326,14 @@ class Reconciler
                 continue;
             }
 
+            if ($before_adjustment
+                && $before_adjustment->parent_nodes
+                && !$result_type->isInt()
+                && !$result_type->isFloat()
+            ) {
+                $result_type->parent_nodes = $before_adjustment->parent_nodes;
+            }
+
             $type_changed = !$before_adjustment || !$result_type->equals($before_adjustment);
 
             if ($type_changed || $failed_reconciliation) {
@@ -318,6 +347,18 @@ class Reconciler
                         $changed_var_ids,
                         $result_type
                     );
+                } elseif ($key !== '$this') {
+                    foreach ($existing_types as $new_key => $_) {
+                        if ($new_key === $key) {
+                            continue;
+                        }
+
+                        if (!isset($new_types[$new_key])
+                            && preg_match('/' . preg_quote($key, '/') . '[\]\[\-]/', $new_key)
+                        ) {
+                            unset($existing_types[$new_key]);
+                        }
+                    }
                 }
             } elseif (!$has_negation && !$has_falsyish && !$has_isset) {
                 $changed_var_ids[$key] = true;
@@ -669,42 +710,14 @@ class Reconciler
                                         $class_property_type = Type::getMixed();
                                     }
                                 } else {
-                                    $property_id = $existing_key_type_part->value . '::$' . $property_name;
+                                    $class_property_type = self::getPropertyType(
+                                        $codebase,
+                                        $existing_key_type_part->value,
+                                        $property_name
+                                    );
 
-                                    if (!$codebase->properties->propertyExists($property_id, true)) {
+                                    if (!$class_property_type) {
                                         return null;
-                                    }
-
-                                    $declaring_property_class = $codebase->properties->getDeclaringClassForProperty(
-                                        $property_id,
-                                        true
-                                    );
-
-                                    if ($declaring_property_class === null) {
-                                        return null;
-                                    }
-
-                                    $class_property_type = $codebase->properties->getPropertyType(
-                                        $property_id,
-                                        false,
-                                        null,
-                                        null
-                                    );
-
-                                    $declaring_class_storage = $codebase->classlike_storage_provider->get(
-                                        $declaring_property_class
-                                    );
-
-                                    if ($class_property_type) {
-                                        $class_property_type = \Psalm\Internal\Type\TypeExpander::expandUnion(
-                                            $codebase,
-                                            clone $class_property_type,
-                                            $declaring_class_storage->name,
-                                            $declaring_class_storage->name,
-                                            null
-                                        );
-                                    } else {
-                                        $class_property_type = Type::getMixed();
                                     }
                                 }
                             }
@@ -746,6 +759,58 @@ class Reconciler
         }
 
         return $existing_keys[$base_key];
+    }
+
+    private static function getPropertyType(
+        Codebase $codebase,
+        string $fq_class_name,
+        string $property_name
+    ) : ?Type\Union {
+        $property_id = $fq_class_name . '::$' . $property_name;
+
+        if (!$codebase->properties->propertyExists($property_id, true)) {
+            $declaring_class_storage = $codebase->classlike_storage_provider->get(
+                $fq_class_name
+            );
+
+            if (isset($declaring_class_storage->pseudo_property_get_types['$' . $property_name])) {
+                return clone $declaring_class_storage->pseudo_property_get_types['$' . $property_name];
+            }
+
+            return null;
+        }
+
+        $declaring_property_class = $codebase->properties->getDeclaringClassForProperty(
+            $property_id,
+            true
+        );
+
+        if ($declaring_property_class === null) {
+            return null;
+        }
+
+        $class_property_type = $codebase->properties->getPropertyType(
+            $property_id,
+            false,
+            null,
+            null
+        );
+
+        $declaring_class_storage = $codebase->classlike_storage_provider->get(
+            $declaring_property_class
+        );
+
+        if ($class_property_type) {
+            return \Psalm\Internal\Type\TypeExpander::expandUnion(
+                $codebase,
+                clone $class_property_type,
+                $declaring_class_storage->name,
+                $declaring_class_storage->name,
+                null
+            );
+        }
+
+        return Type::getMixed();
     }
 
     /**

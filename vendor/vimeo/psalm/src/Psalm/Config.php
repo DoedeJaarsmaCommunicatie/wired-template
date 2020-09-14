@@ -2,13 +2,14 @@
 namespace Psalm;
 
 use Composer\Semver\Semver;
+use Psalm\Issue\VariableIssue;
 use Webmozart\PathUtil\Path;
 use function array_merge;
 use function array_pop;
-use function array_unique;
 use function class_exists;
 use Composer\Autoload\ClassLoader;
 use DOMDocument;
+use LogicException;
 
 use function count;
 use const DIRECTORY_SEPARATOR;
@@ -46,6 +47,7 @@ use Psalm\Exception\ConfigException;
 use Psalm\Internal\Analyzer\ClassLikeAnalyzer;
 use Psalm\Internal\Analyzer\FileAnalyzer;
 use Psalm\Internal\Analyzer\ProjectAnalyzer;
+use Psalm\Internal\IncludeCollector;
 use Psalm\Internal\Scanner\FileScanner;
 use Psalm\Issue\ArgumentIssue;
 use Psalm\Issue\ClassIssue;
@@ -62,6 +64,8 @@ use function rmdir;
 use function scandir;
 use function sha1;
 use SimpleXMLElement;
+use XdgBaseDir\Xdg;
+
 use function strpos;
 use function strrpos;
 use function strtolower;
@@ -81,6 +85,7 @@ use const SCANDIR_SORT_NONE;
 
 /**
  * @psalm-suppress PropertyNotSetInConstructor
+ * @psalm-consistent-constructor
  */
 class Config
 {
@@ -400,6 +405,19 @@ class Config
     public $find_unused_variables = false;
 
     /**
+     * @var bool
+     */
+    public $find_unused_psalm_suppress = false;
+
+    /**
+     * @var bool
+     */
+    public $run_taint_analysis = false;
+
+    /** @var bool */
+    public $use_phpstorm_meta_path = true;
+
+    /**
      * Whether to resolve file and directory paths from the location of the config file,
      * instead of the current working directory.
      *
@@ -504,10 +522,26 @@ class Config
     public $after_analysis = [];
 
     /**
-     * Static methods to be called after codebase has been populated
-     * @var class-string<Hook\BeforeAnalyzeFileInterface>[]
+     * Static methods to be called after a file has been analyzed
+     * @var class-string<Hook\AfterFileAnalysisInterface>[]
      */
-    public $before_analyze_file = [];
+    public $after_file_checks = [];
+
+    /**
+     * Static methods to be called before a file is analyzed
+     * @var class-string<Hook\BeforeFileAnalysisInterface>[]
+     */
+    public $before_file_checks = [];
+
+    /**
+     * @var bool
+     */
+    public $allow_internal_named_arg_calls = true;
+
+    /**
+     * @var bool
+     */
+    public $allow_named_arg_calls = true;
 
     /**
      * Static methods to be called after functionlike checks have completed
@@ -563,6 +597,9 @@ class Config
      */
     public $max_string_length = 1000;
 
+    /** @var ?IncludeCollector */
+    private $include_collector;
+
     /**
      * @var TaintAnalysisFileFilter|null
      */
@@ -572,6 +609,11 @@ class Config
      * @var bool whether to emit a backtrace of emitted issues to stderr
      */
     public $debug_emitted_issues = false;
+
+    /**
+     * @var bool
+     */
+    private $report_info = true;
 
     protected function __construct()
     {
@@ -801,7 +843,13 @@ class Config
             'ensureArrayIntOffsetsExist' => 'ensure_array_int_offsets_exist',
             'reportMixedIssues' => 'show_mixed_issues',
             'skipChecksOnUnresolvableIncludes' => 'skip_checks_on_unresolvable_includes',
-            'sealAllMethods' => 'seal_all_methods'
+            'sealAllMethods' => 'seal_all_methods',
+            'runTaintAnalysis' => 'run_taint_analysis',
+            'usePhpStormMetaPath' => 'use_phpstorm_meta_path',
+            'allowInternalNamedArgumentsCalls' => 'allow_internal_named_arg_calls',
+            'allowNamedArgumentCalls' => 'allow_named_arg_calls',
+            'findUnusedPsalmSuppress' => 'find_unused_psalm_suppress',
+            'reportInfo' => 'report_info',
         ];
 
         foreach ($booleanAttributes as $xmlName => $internalName) {
@@ -837,6 +885,8 @@ class Config
 
         if (isset($config_xml['cacheDirectory'])) {
             $config->cache_directory = (string)$config_xml['cacheDirectory'];
+        } elseif ($user_cache_dir = (new Xdg())->getHomeCacheDir()) {
+            $config->cache_directory = $user_cache_dir . '/psalm';
         } else {
             $config->cache_directory = sys_get_temp_dir() . '/psalm';
         }
@@ -1061,18 +1111,6 @@ class Config
     }
 
     /**
-     * @param  string $autoloader_path
-     *
-     * @return void
-     *
-     * @psalm-suppress UnresolvableInclude
-     */
-    private function requireAutoloader($autoloader_path)
-    {
-        require_once($autoloader_path);
-    }
-
-    /**
      * @return $this
      */
     public static function getInstance()
@@ -1197,8 +1235,7 @@ class Config
                         'Loading plugin ' . $plugin_class_name . ' via require'. PHP_EOL
                     );
 
-                    /** @psalm-suppress UnresolvableInclude */
-                    require_once($plugin_class_path);
+                    self::requirePath($plugin_class_path);
                 } else {
                     if (!class_exists($plugin_class_name, true)) {
                         throw new \UnexpectedValueException($plugin_class_name . ' is not a known class');
@@ -1226,8 +1263,7 @@ class Config
                 FileScanner::class
             );
 
-            /** @psalm-suppress UnresolvableInclude */
-            require_once($path);
+            self::requirePath($path);
 
             $this->filetype_scanners[$extension] = $fq_class_name;
         }
@@ -1239,8 +1275,7 @@ class Config
                 FileAnalyzer::class
             );
 
-            /** @psalm-suppress UnresolvableInclude */
-            require_once($path);
+            self::requirePath($path);
 
             $this->filetype_analyzers[$extension] = $fq_class_name;
         }
@@ -1253,6 +1288,12 @@ class Config
                 throw new ConfigException('Failed to load plugin ' . $path, 0, $e);
             }
         }
+    }
+
+    private static function requirePath(string $path) : void
+    {
+        /** @psalm-suppress UnresolvableInclude */
+        require_once($path);
     }
 
     /**
@@ -1418,10 +1459,16 @@ class Config
             $reporting_level = $this->getReportingLevelForProperty($issue_type, $e->property_id);
         } elseif ($e instanceof ArgumentIssue && $e->function_id) {
             $reporting_level = $this->getReportingLevelForArgument($issue_type, $e->function_id);
+        } elseif ($e instanceof VariableIssue) {
+            $reporting_level = $this->getReportingLevelForVariable($issue_type, $e->var_name);
         }
 
         if ($reporting_level === null) {
             $reporting_level = $this->getReportingLevelForFile($issue_type, $e->getFilePath());
+        }
+
+        if (!$this->report_info && $reporting_level === self::REPORT_INFO) {
+            $reporting_level = self::REPORT_SUPPRESS;
         }
 
         $parent_issue_type = self::getParentIssueType($issue_type);
@@ -1438,9 +1485,11 @@ class Config
     }
 
     /**
-     * @param  string $issue_type
+     * @param string $issue_type
      *
      * @return string|null
+     *
+     * @psalm-pure
      */
     public static function getParentIssueType($issue_type)
     {
@@ -1631,6 +1680,19 @@ class Config
     }
 
     /**
+     * @param   string $issue_type
+     * @param   string $var_name
+     *
+     * @return  string|null
+     */
+    public function getReportingLevelForVariable(string $issue_type, string $var_name)
+    {
+        if (isset($this->issue_handlers[$issue_type])) {
+            return $this->issue_handlers[$issue_type]->getReportingLevelForVariable($var_name);
+        }
+    }
+
+    /**
      * @return array<string>
      */
     public function getProjectDirectories()
@@ -1768,14 +1830,16 @@ class Config
 
         $phpstorm_meta_path = $this->base_dir . DIRECTORY_SEPARATOR . '.phpstorm.meta.php';
 
-        if (is_file($phpstorm_meta_path)) {
-            $stub_files[] = $phpstorm_meta_path;
-        } elseif (is_dir($phpstorm_meta_path)) {
-            $phpstorm_meta_path = realpath($phpstorm_meta_path);
+        if ($this->use_phpstorm_meta_path) {
+            if (is_file($phpstorm_meta_path)) {
+                $stub_files[] = $phpstorm_meta_path;
+            } elseif (is_dir($phpstorm_meta_path)) {
+                $phpstorm_meta_path = realpath($phpstorm_meta_path);
 
-            foreach (glob($phpstorm_meta_path . '/*.meta.php', GLOB_NOSORT) as $glob) {
-                if (is_file($glob) && realpath(dirname($glob)) === $phpstorm_meta_path) {
-                    $stub_files[] = $glob;
+                foreach (glob($phpstorm_meta_path . '/*.meta.php', GLOB_NOSORT) as $glob) {
+                    if (is_file($glob) && realpath(dirname($glob)) === $phpstorm_meta_path) {
+                        $stub_files[] = $glob;
+                    }
                 }
             }
         }
@@ -1792,7 +1856,7 @@ class Config
 
         foreach ($stub_files as $file_path) {
             $file_path = \str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $file_path);
-            $codebase->scanner->addFileToShallowScan($file_path);
+            $codebase->scanner->addFileToDeepScan($file_path);
         }
 
         $progress->debug('Registering stub files' . "\n");
@@ -1864,6 +1928,11 @@ class Config
         }
     }
 
+    public function setIncludeCollector(IncludeCollector $include_collector): void
+    {
+        $this->include_collector = $include_collector;
+    }
+
     /**
      * @return void
      *
@@ -1876,80 +1945,63 @@ class Config
             $progress = new VoidProgress();
         }
 
-        $this->collectPredefinedConstants();
-        $this->collectPredefinedFunctions();
-
-        $composer_json_path = $this->base_dir . 'composer.json'; // this should ideally not be hardcoded
-
-        $autoload_files_files = [];
-
-        if ($this->autoloader) {
-            $autoload_files_files[] = $this->autoloader;
+        if (!$this->include_collector) {
+            throw new LogicException("IncludeCollector should be set at this point");
         }
 
-        if (file_exists($composer_json_path)) {
-            if (!$composer_json = json_decode(file_get_contents($composer_json_path), true)) {
-                throw new \UnexpectedValueException('Invalid composer.json at ' . $composer_json_path);
-            }
+        $vendor_autoload_files_path
+            = $this->base_dir . DIRECTORY_SEPARATOR . 'vendor'
+                . DIRECTORY_SEPARATOR . 'composer' . DIRECTORY_SEPARATOR . 'autoload_files.php';
 
-            if (isset($composer_json['autoload']['files'])) {
-                /** @var string[] */
-                $composer_autoload_files = $composer_json['autoload']['files'];
-
-                foreach ($composer_autoload_files as $file) {
-                    $file_path = realpath($this->base_dir . $file);
-
-                    if ($file_path && file_exists($file_path)) {
-                        $autoload_files_files[] = $file_path;
-                    }
+        if (file_exists($vendor_autoload_files_path)) {
+            $this->include_collector->runAndCollect(
+                function () use ($vendor_autoload_files_path) {
+                    /**
+                     * @psalm-suppress UnresolvableInclude
+                     * @var string[]
+                     */
+                    return require $vendor_autoload_files_path;
                 }
-            }
-
-            $vendor_autoload_files_path
-                = $this->base_dir . DIRECTORY_SEPARATOR . 'vendor'
-                    . DIRECTORY_SEPARATOR . 'composer' . DIRECTORY_SEPARATOR . 'autoload_files.php';
-
-            if (file_exists($vendor_autoload_files_path)) {
-                /**
-                 * @var string[]
-                 */
-                $vendor_autoload_files = require $vendor_autoload_files_path;
-
-                $autoload_files_files = array_merge($autoload_files_files, $vendor_autoload_files);
-            }
+            );
         }
-
-        $autoload_files_files = array_unique($autoload_files_files);
 
         $codebase = $project_analyzer->getCodebase();
 
-        if ($autoload_files_files) {
-            $codebase->register_autoload_files = true;
-
-            foreach ($autoload_files_files as $file_path) {
-                $file_path = \str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $file_path);
-                $codebase->scanner->addFileToDeepScan($file_path);
-            }
-
-            $progress->debug('Registering autoloaded files' . "\n");
-
-            $codebase->scanner->scanFiles($codebase->classlikes);
-
-            $progress->debug('Finished registering autoloaded files' . "\n");
-
-            $codebase->register_autoload_files = false;
-        }
+        $this->collectPredefinedFunctions();
 
         if ($this->autoloader) {
             // somee classes that we think are missing may not actually be missing
             // as they might be autoloadable once we require the autoloader below
             $codebase->classlikes->forgetMissingClassLikes();
 
-            // do this in a separate method so scope does not leak
-            $this->requireAutoloader($this->autoloader);
+            $this->include_collector->runAndCollect(
+                function () {
+                    // do this in a separate method so scope does not leak
+                    /** @psalm-suppress UnresolvableInclude */
+                    require $this->autoloader;
+                }
+            );
+        }
 
-            $this->collectPredefinedConstants();
-            $this->collectPredefinedFunctions();
+        $this->collectPredefinedConstants();
+
+        $autoload_included_files = $this->include_collector->getFilteredIncludedFiles();
+
+        if ($autoload_included_files) {
+            $codebase->register_autoload_files = true;
+
+            $progress->debug('Registering autoloaded files' . "\n");
+            foreach ($autoload_included_files as $file_path) {
+                $file_path = \str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $file_path);
+                $progress->debug('   ' . $file_path . "\n");
+                $codebase->scanner->addFileToDeepScan($file_path);
+            }
+
+            $codebase->scanner->scanFiles($codebase->classlikes);
+
+            $progress->debug('Finished registering autoloaded files' . "\n");
+
+            $codebase->register_autoload_files = false;
         }
     }
 

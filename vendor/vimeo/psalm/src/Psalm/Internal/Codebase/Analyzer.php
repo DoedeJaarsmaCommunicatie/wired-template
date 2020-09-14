@@ -6,6 +6,7 @@ use function array_intersect_key;
 use function array_merge;
 use function count;
 use function explode;
+use InvalidArgumentException;
 use function number_format;
 use function pathinfo;
 use PhpParser;
@@ -15,8 +16,10 @@ use Psalm\FileManipulation;
 use Psalm\Internal\Analyzer\IssueData;
 use Psalm\Internal\Analyzer\FileAnalyzer;
 use Psalm\Internal\Analyzer\ProjectAnalyzer;
+use Psalm\Internal\FileManipulation\ClassDocblockManipulator;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\FileManipulation\FunctionDocblockManipulator;
+use Psalm\Internal\FileManipulation\PropertyDocblockManipulator;
 use Psalm\Internal\Provider\FileProvider;
 use Psalm\Internal\Provider\FileStorageProvider;
 use Psalm\IssueBuffer;
@@ -24,7 +27,6 @@ use Psalm\Progress\Progress;
 use function strpos;
 use function substr;
 use function usort;
-use function array_diff_key;
 use function array_values;
 
 /**
@@ -45,6 +47,7 @@ use function array_values;
  *      file_references_to_missing_class_members: array<string, array<string,bool>>,
  *      mixed_counts: array<string, array{0: int, 1: int}>,
  *      mixed_member_names: array<string, array<string, bool>>,
+ *      function_timings: array<string, float>,
  *      file_manipulations: array<string, FileManipulation[]>,
  *      method_references_to_class_members: array<string, array<string,bool>>,
  *      method_references_to_missing_class_members: array<string, array<string,bool>>,
@@ -57,7 +60,9 @@ use function array_values;
  *      possible_method_param_types: array<string, array<int, \Psalm\Type\Union>>,
  *      taint_data: ?\Psalm\Internal\Codebase\Taint,
  *      unused_suppressions: array<string, array<int, int>>,
- *      used_suppressions: array<string, array<int, bool>>
+ *      used_suppressions: array<string, array<int, bool>>,
+ *      function_docblock_manipulators: array<string, array<int, FunctionDocblockManipulator>>,
+ *      mutable_classes: array<string, bool>,
  * }
  */
 
@@ -106,6 +111,13 @@ class Analyzer
      * @var bool
      */
     private $count_mixed = true;
+
+    /**
+     * Used to store debug performance data
+     *
+     * @var array<string, float>
+     */
+    private $function_timings = [];
 
     /**
      * We analyze more files than we necessarily report errors in
@@ -158,6 +170,11 @@ class Analyzer
      * @var array<string, array<int, \Psalm\Type\Union>>
      */
     public $possible_method_param_types = [];
+
+    /**
+     * @var array<string, bool>
+     */
+    public $mutable_classes = [];
 
     public function __construct(
         Config $config,
@@ -315,7 +332,7 @@ class Analyzer
         }
     }
 
-    private function doAnalysis(ProjectAnalyzer $project_analyzer, int $pool_size, bool $rerun = false) : void
+    private function doAnalysis(ProjectAnalyzer $project_analyzer, int $pool_size) : void
     {
         $this->progress->start(count($this->files_to_analyze));
 
@@ -425,7 +442,7 @@ class Analyzer
                 },
                 $analysis_worker,
                 /** @return WorkerData */
-                function () use ($rerun) {
+                function () {
                     $project_analyzer = ProjectAnalyzer::getInstance();
                     $codebase = $project_analyzer->getCodebase();
                     $analyzer = $codebase->analyzer;
@@ -437,25 +454,28 @@ class Analyzer
                     return [
                         'issues' => IssueBuffer::getIssuesData(),
                         'fixable_issue_counts' => IssueBuffer::getFixableIssues(),
-                        'nonmethod_references_to_classes' => $rerun ? [] : $file_reference_provider->getAllNonMethodReferencesToClasses(),
-                        'method_references_to_classes' => $rerun ? [] : $file_reference_provider->getAllMethodReferencesToClasses(),
-                        'file_references_to_class_members' => $rerun ? [] : $file_reference_provider->getAllFileReferencesToClassMembers(),
-                        'method_references_to_class_members' => $rerun ? [] : $file_reference_provider->getAllMethodReferencesToClassMembers(),
-                        'file_references_to_missing_class_members' => $rerun ? [] : $file_reference_provider->getAllFileReferencesToMissingClassMembers(),
-                        'method_references_to_missing_class_members' => $rerun ? [] : $file_reference_provider->getAllMethodReferencesToMissingClassMembers(),
-                        'method_param_uses' => $rerun ? [] : $file_reference_provider->getAllMethodParamUses(),
-                        'mixed_member_names' => $rerun ? [] : $analyzer->getMixedMemberNames(),
-                        'file_manipulations' => $rerun ? [] : FileManipulationBuffer::getAll(),
-                        'mixed_counts' => $rerun ? [] : $analyzer->getMixedCounts(),
-                        'analyzed_methods' => $rerun ? [] : $analyzer->getAnalyzedMethods(),
-                        'file_maps' => $rerun ? [] : $analyzer->getFileMaps(),
-                        'class_locations' => $rerun ? [] : $file_reference_provider->getAllClassLocations(),
-                        'class_method_locations' => $rerun ? [] : $file_reference_provider->getAllClassMethodLocations(),
-                        'class_property_locations' => $rerun ? [] : $file_reference_provider->getAllClassPropertyLocations(),
-                        'possible_method_param_types' => $rerun ? [] : $analyzer->getPossibleMethodParamTypes(),
+                        'nonmethod_references_to_classes' => $file_reference_provider->getAllNonMethodReferencesToClasses(),
+                        'method_references_to_classes' => $file_reference_provider->getAllMethodReferencesToClasses(),
+                        'file_references_to_class_members' => $file_reference_provider->getAllFileReferencesToClassMembers(),
+                        'method_references_to_class_members' => $file_reference_provider->getAllMethodReferencesToClassMembers(),
+                        'file_references_to_missing_class_members' => $file_reference_provider->getAllFileReferencesToMissingClassMembers(),
+                        'method_references_to_missing_class_members' => $file_reference_provider->getAllMethodReferencesToMissingClassMembers(),
+                        'method_param_uses' => $file_reference_provider->getAllMethodParamUses(),
+                        'mixed_member_names' => $analyzer->getMixedMemberNames(),
+                        'file_manipulations' => FileManipulationBuffer::getAll(),
+                        'mixed_counts' => $analyzer->getMixedCounts(),
+                        'function_timings' => $analyzer->getFunctionTimings(),
+                        'analyzed_methods' => $analyzer->getAnalyzedMethods(),
+                        'file_maps' => $analyzer->getFileMaps(),
+                        'class_locations' => $file_reference_provider->getAllClassLocations(),
+                        'class_method_locations' => $file_reference_provider->getAllClassMethodLocations(),
+                        'class_property_locations' => $file_reference_provider->getAllClassPropertyLocations(),
+                        'possible_method_param_types' => $analyzer->getPossibleMethodParamTypes(),
                         'taint_data' => $codebase->taint,
                         'unused_suppressions' => $codebase->track_unused_suppressions ? IssueBuffer::getUnusedSuppressions() : [],
                         'used_suppressions' => $codebase->track_unused_suppressions ? IssueBuffer::getUsedSuppressions() : [],
+                        'function_docblock_manipulators' => FunctionDocblockManipulator::getManipulators(),
+                        'mutable_classes' => $codebase->analyzer->mutable_classes,
                     ];
                     // @codingStandardsIgnoreEnd
                 },
@@ -485,10 +505,6 @@ class Analyzer
                     $codebase->taint->addThreadData($pool_data['taint_data']);
                 }
 
-                if ($rerun) {
-                    continue;
-                }
-
                 $codebase->file_reference_provider->addNonMethodReferencesToClasses(
                     $pool_data['nonmethod_references_to_classes']
                 );
@@ -513,6 +529,7 @@ class Analyzer
                 $this->addMixedMemberNames(
                     $pool_data['mixed_member_names']
                 );
+                $this->function_timings += $pool_data['function_timings'];
                 $codebase->file_reference_provider->addClassLocations(
                     $pool_data['class_locations']
                 );
@@ -522,6 +539,10 @@ class Analyzer
                 $codebase->file_reference_provider->addClassPropertyLocations(
                     $pool_data['class_property_locations']
                 );
+
+                $this->mutable_classes = array_merge($this->mutable_classes, $pool_data['mutable_classes']);
+
+                FunctionDocblockManipulator::addManipulators($pool_data['function_docblock_manipulators']);
 
                 $this->analyzed_methods = array_merge($pool_data['analyzed_methods'], $this->analyzed_methods);
 
@@ -669,9 +690,15 @@ class Analyzer
                             if ($referencing_base_classlike === $unchanged_signature_classlike) {
                                 $newly_invalidated_methods[$referencing_method_id] = true;
                             } else {
-                                $referencing_storage = $codebase->classlike_storage_provider->get(
-                                    $referencing_base_classlike
-                                );
+                                try {
+                                    $referencing_storage = $codebase->classlike_storage_provider->get(
+                                        $referencing_base_classlike
+                                    );
+                                } catch (InvalidArgumentException $_) {
+                                    // Workaround for #3671
+                                    $newly_invalidated_methods[$referencing_method_id] = true;
+                                    $referencing_storage = null;
+                                }
 
                                 if (isset($referencing_storage->used_traits[$unchanged_signature_classlike])
                                     || isset($referencing_storage->parent_classes[$unchanged_signature_classlike])
@@ -1139,6 +1166,19 @@ class Analyzer
     }
 
     /**
+     * @return array<string, float>
+     */
+    public function getFunctionTimings()
+    {
+        return $this->function_timings;
+    }
+
+    public function addFunctionTiming(string $function_id, float $time_per_node) : void
+    {
+        $this->function_timings[$function_id] = $time_per_node;
+    }
+
+    /**
      * @return void
      */
     public function addNodeType(
@@ -1329,6 +1369,16 @@ class Analyzer
             FunctionDocblockManipulator::getManipulationsForFile($file_path)
         );
 
+        FileManipulationBuffer::add(
+            $file_path,
+            PropertyDocblockManipulator::getManipulationsForFile($file_path)
+        );
+
+        FileManipulationBuffer::add(
+            $file_path,
+            ClassDocblockManipulator::getManipulationsForFile($file_path)
+        );
+
         $file_manipulations = FileManipulationBuffer::getManipulationsForFile($file_path);
 
         if (!$file_manipulations) {
@@ -1509,6 +1559,11 @@ class Analyzer
     public function getPossibleMethodParamTypes()
     {
         return $this->possible_method_param_types;
+    }
+
+    public function addMutableClass(string $fqcln) : void
+    {
+        $this->mutable_classes[\strtolower($fqcln)] = true;
     }
 
     /**

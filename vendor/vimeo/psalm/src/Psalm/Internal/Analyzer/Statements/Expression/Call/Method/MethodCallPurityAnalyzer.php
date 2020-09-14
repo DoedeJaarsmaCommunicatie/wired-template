@@ -36,7 +36,7 @@ class MethodCallPurityAnalyzer
         ) {
             if (IssueBuffer::accepts(
                 new ImpureMethodCall(
-                    'Cannot call an mutation-free method '
+                    'Cannot call a non-mutation-free method '
                         . $cased_method_id . ' from a pure context',
                     new CodeLocation($statements_analyzer, $stmt->name)
                 ),
@@ -78,8 +78,14 @@ class MethodCallPurityAnalyzer
                     && (isset($stmt->var->external_mutation_free) || isset($stmt->var->pure))))
             && !$context->inside_unset
         ) {
-            if ($method_storage->mutation_free && !$method_storage->mutation_free_inferred) {
-                if ($context->inside_conditional) {
+            if ($method_storage->mutation_free
+                && (!$method_storage->mutation_free_inferred
+                    || $method_storage->final)
+            ) {
+                if ($context->inside_conditional
+                    && !$method_storage->assertions
+                    && !$method_storage->if_true_assertions
+                ) {
                     /** @psalm-suppress UndefinedPropertyAssignment */
                     $stmt->pure = true;
                 }
@@ -104,6 +110,18 @@ class MethodCallPurityAnalyzer
                     $stmt->pure = true;
                 }
             }
+        }
+
+        if ($statements_analyzer->getSource() instanceof \Psalm\Internal\Analyzer\FunctionLikeAnalyzer
+            && $statements_analyzer->getSource()->track_mutations
+            && !$method_storage->mutation_free
+            && !$method_pure_compatible
+        ) {
+            if (!$method_storage->mutation_free) {
+                $statements_analyzer->getSource()->inferred_has_mutation = true;
+            }
+
+            $statements_analyzer->getSource()->inferred_impure = true;
         }
 
         if (!$config->remember_property_assignments_after_call

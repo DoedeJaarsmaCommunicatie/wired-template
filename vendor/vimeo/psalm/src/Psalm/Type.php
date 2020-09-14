@@ -9,7 +9,7 @@ use function explode;
 use function implode;
 use function preg_quote;
 use function preg_replace;
-use Psalm\Internal\Analyzer\TypeAnalyzer;
+use Psalm\Internal\Type\Comparator\AtomicTypeComparator;
 use Psalm\Internal\Type\TypeCombination;
 use Psalm\Internal\Type\TypeParser;
 use Psalm\Internal\Type\TypeTokenizer;
@@ -103,7 +103,9 @@ abstract class Type
     }
 
     /**
-     * @param  array<string, string> $aliased_classes
+     * @param array<string, string> $aliased_classes
+     *
+     * @psalm-pure
      */
     public static function getStringFromFQCLN(
         string $value,
@@ -169,6 +171,20 @@ abstract class Type
             $union = new Union([new TInt()]);
         }
 
+        $union->from_calculation = $from_calculation;
+
+        return $union;
+    }
+
+    /**
+     * @param bool $from_calculation
+     * @param int|null $value
+     *
+     * @return Type\Union
+     */
+    public static function getPositiveInt(bool $from_calculation = false)
+    {
+        $union = new Union([new Type\Atomic\TPositiveInt()]);
         $union->from_calculation = $from_calculation;
 
         return $union;
@@ -342,7 +358,7 @@ abstract class Type
      */
     public static function getClosure()
     {
-        $type = new TNamedObject('Closure');
+        $type = new Type\Atomic\TFn('Closure');
 
         return new Union([$type]);
     }
@@ -402,6 +418,16 @@ abstract class Type
     /**
      * @return Type\Union
      */
+    public static function getNonEmptyList()
+    {
+        $type = new Type\Atomic\TNonEmptyList(new Type\Union([new TMixed]));
+
+        return new Union([$type]);
+    }
+
+    /**
+     * @return Type\Union
+     */
     public static function getVoid()
     {
         $type = new TVoid;
@@ -435,6 +461,20 @@ abstract class Type
     public static function getResource()
     {
         return new Union([new TResource]);
+    }
+
+    /**
+     * @param non-empty-list<Type\Union> $union_types
+     */
+    public static function combineUnionTypeArray(array $union_types, ?Codebase $codebase) : Type\Union
+    {
+        $first_type = array_pop($union_types);
+
+        foreach ($union_types as $type) {
+            $first_type = self::combineUnionTypes($first_type, $type, $codebase);
+        }
+
+        return $first_type;
     }
 
     /**
@@ -579,7 +619,7 @@ abstract class Type
                         if ($type_1_atomic instanceof TNamedObject
                             && $type_2_atomic instanceof TNamedObject
                         ) {
-                            if (TypeAnalyzer::isAtomicContainedBy(
+                            if (AtomicTypeComparator::isContainedBy(
                                 $codebase,
                                 $type_2_atomic,
                                 $type_1_atomic
@@ -587,7 +627,7 @@ abstract class Type
                                 $combined_type->removeType($t1_key);
                                 $combined_type->addType(clone $type_2_atomic);
                                 $intersection_performed = true;
-                            } elseif (TypeAnalyzer::isAtomicContainedBy(
+                            } elseif (AtomicTypeComparator::isContainedBy(
                                 $codebase,
                                 $type_1_atomic,
                                 $type_2_atomic

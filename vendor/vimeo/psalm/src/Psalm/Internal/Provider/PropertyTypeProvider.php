@@ -1,14 +1,12 @@
 <?php
 namespace Psalm\Internal\Provider;
 
-use const PHP_VERSION;
 use PhpParser;
 use Psalm\Context;
 use Psalm\Plugin\Hook\PropertyTypeProviderInterface;
 use Psalm\StatementsSource;
 use Psalm\Type;
 use function strtolower;
-use function version_compare;
 
 class PropertyTypeProvider
 {
@@ -41,7 +39,6 @@ class PropertyTypeProvider
         $callable = \Closure::fromCallable([$class, 'getPropertyType']);
 
         foreach ($class::getClassLikeNames() as $fq_classlike_name) {
-            /** @psalm-suppress MixedTypeCoercion */
             $this->registerClosure($fq_classlike_name, $callable);
         }
     }

@@ -10,6 +10,8 @@ use Psalm\Codebase;
 use Psalm\Internal\Analyzer\FunctionLike\ReturnTypeAnalyzer;
 use Psalm\Internal\Analyzer\FunctionLike\ReturnTypeCollector;
 use Psalm\Internal\Analyzer\Statements\ExpressionAnalyzer;
+use Psalm\Internal\Type\Comparator\TypeComparisonResult;
+use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\CodeLocation;
 use Psalm\Context;
 use Psalm\Internal\FileManipulation\FunctionDocblockManipulator;
@@ -92,6 +94,21 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
      * @var array<string, bool>
      */
     protected static $no_effects_hashes = [];
+
+    /**
+     * @var bool
+     */
+    public $track_mutations = false;
+
+    /**
+     * @var bool
+     */
+    public $inferred_impure = false;
+
+    /**
+     * @var bool
+     */
+    public $inferred_has_mutation = false;
 
     /**
      * @var FunctionLikeStorage
@@ -206,10 +223,10 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                         $context->self,
                         $template_params
                     );
-                    $this_object_type->was_static = true;
+                    $this_object_type->was_static = !$storage->final;
                 } else {
                     $this_object_type = new TNamedObject($context->self);
-                    $this_object_type->was_static = true;
+                    $this_object_type->was_static = !$storage->final;
                 }
 
                 $context->vars_in_scope['$this'] = new Type\Union([$this_object_type]);
@@ -247,7 +264,6 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             );
 
             if ($overridden_method_ids
-                && $this->function->name->name !== '__construct'
                 && !$context->collect_initializations
                 && !$context->collect_mutations
             ) {
@@ -257,6 +273,12 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                     $overridden_fq_class_name = $overridden_method_id->fq_class_name;
 
                     $parent_storage = $classlike_storage_provider->get($overridden_fq_class_name);
+
+                    if ($this->function->name->name === '__construct'
+                        && !$parent_storage->preserve_constructor_signature
+                    ) {
+                        continue;
+                    }
 
                     $implementer_visibility = $storage->visibility;
 
@@ -291,6 +313,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                     if (!isset($appearing_class_storage->class_implements[strtolower($overridden_fq_class_name)])) {
                         MethodComparator::compare(
                             $codebase,
+                            \count($overridden_method_ids) === 1 ? $this->function : null,
                             $declaring_class_storage,
                             $parent_storage,
                             $storage,
@@ -324,11 +347,10 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 $context->calling_method_id = strtolower((string) $method_id);
             }
         } elseif ($this->function instanceof Function_) {
-            $cased_method_id = $this->function->name->name;
+            $function_name = $this->function->name->name;
             $namespace_prefix = $this->getNamespace();
-            $context->calling_function_id = strtolower(
-                ($namespace_prefix !== null ? $namespace_prefix . '\\' : '') . $cased_method_id
-            );
+            $cased_method_id = ($namespace_prefix !== null ? $namespace_prefix . '\\' : '') . $function_name;
+            $context->calling_function_id = strtolower($cased_method_id);
         } else { // Closure
             if ($storage->return_type) {
                 $closure_return_type = \Psalm\Internal\Type\TypeExpander::expandUnion(
@@ -350,6 +372,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
 
             if ($storage instanceof FunctionStorage) {
                 $closure_type->byref_uses = $storage->byref_uses;
+                $closure_type->is_pure = $storage->pure;
             }
 
             $type_provider->setType(
@@ -506,6 +529,17 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             }
         }
 
+        if ($storage->signature_return_type && $storage->signature_return_type_location) {
+            list($start, $end) = $storage->signature_return_type_location->getSelectionBounds();
+
+            $codebase->analyzer->addOffsetReference(
+                $this->getFilePath(),
+                $start,
+                $end,
+                (string) $storage->signature_return_type
+            );
+        }
+
         if (ReturnTypeAnalyzer::checkReturnType(
             $this->function,
             $project_analyzer,
@@ -545,7 +579,87 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             ]);
         }
 
+        $time = \microtime(true);
+
+        $project_analyzer = $statements_analyzer->getProjectAnalyzer();
+
+        if ($codebase->alter_code
+            && (isset($project_analyzer->getIssuesToFix()['MissingPureAnnotation'])
+                || isset($project_analyzer->getIssuesToFix()['MissingImmutableAnnotation']))
+        ) {
+            $this->track_mutations = true;
+        } elseif ($this->function instanceof Closure
+            || $this->function instanceof ArrowFunction
+        ) {
+            $this->track_mutations = true;
+        }
+
         $statements_analyzer->analyze($function_stmts, $context, $global_context, true);
+
+        if ($codebase->alter_code
+            && isset($project_analyzer->getIssuesToFix()['MissingPureAnnotation'])
+            && !$this->inferred_impure
+            && ($this->function instanceof Function_
+                || $this->function instanceof ClassMethod)
+            && $storage->params
+            && !$overridden_method_ids
+        ) {
+            $manipulator = FunctionDocblockManipulator::getForFunction(
+                $project_analyzer,
+                $this->source->getFilePath(),
+                $this->function
+            );
+
+            $yield_types = [];
+
+            $inferred_return_types = ReturnTypeCollector::getReturnTypes(
+                $codebase,
+                $type_provider,
+                $function_stmts,
+                $yield_types,
+                true
+            );
+
+            $inferred_return_type = $inferred_return_types
+                ? \Psalm\Type::combineUnionTypeArray(
+                    $inferred_return_types,
+                    $codebase
+                )
+                : null;
+
+            if ($inferred_return_type
+                && !$inferred_return_type->isVoid()
+                && !$inferred_return_type->isFalse()
+                && !$inferred_return_type->isNull()
+                && !$inferred_return_type->isSingleIntLiteral()
+                && !$inferred_return_type->isSingleStringLiteral()
+                && !$inferred_return_type->isTrue()
+                && $inferred_return_type->getId() !== 'array<empty, empty>'
+            ) {
+                $manipulator->makePure();
+            }
+        }
+
+        if ($this->inferred_has_mutation && $context->self) {
+            $this->codebase->analyzer->addMutableClass($context->self);
+        }
+
+        if (!$context->collect_initializations
+            && !$context->collect_mutations
+            && $project_analyzer->debug_performance
+            && $cased_method_id
+        ) {
+            $traverser = new PhpParser\NodeTraverser;
+
+            $node_counter = new \Psalm\Internal\PhpVisitor\NodeCounterVisitor();
+            $traverser->addVisitor($node_counter);
+            $traverser->traverse($function_stmts);
+
+            if ($node_counter->count > 5) {
+                $time_taken = \microtime(true) - $time;
+                $codebase->analyzer->addFunctionTiming($cased_method_id, $time_taken / $node_counter->count);
+            }
+        }
 
         $this->examineParamTypes($statements_analyzer, $context, $codebase);
 
@@ -577,17 +691,6 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             }
         }
 
-        if ($storage->signature_return_type && $storage->signature_return_type_location) {
-            list($start, $end) = $storage->signature_return_type_location->getSelectionBounds();
-
-            $codebase->analyzer->addOffsetReference(
-                $this->getFilePath(),
-                $start,
-                $end,
-                (string) $storage->signature_return_type
-            );
-        }
-
         if ($this->function instanceof Closure
             || $this->function instanceof ArrowFunction
         ) {
@@ -603,28 +706,23 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
 
             $closure_yield_types = [];
 
-            $ignore_nullable_issues = false;
-            $ignore_falsable_issues = false;
-
             $closure_return_types = ReturnTypeCollector::getReturnTypes(
                 $codebase,
                 $type_provider,
                 $function_stmts,
                 $closure_yield_types,
-                $ignore_nullable_issues,
-                $ignore_falsable_issues,
                 true
             );
 
             $closure_return_type = $closure_return_types
-                ? \Psalm\Internal\Type\TypeCombination::combineTypes(
+                ? \Psalm\Type::combineUnionTypeArray(
                     $closure_return_types,
                     $codebase
                 )
                 : null;
 
             $closure_yield_type = $closure_yield_types
-                ? \Psalm\Internal\Type\TypeCombination::combineTypes(
+                ? \Psalm\Type::combineUnionTypeArray(
                     $closure_yield_types,
                     $codebase
                 )
@@ -635,22 +733,25 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                     $closure_return_type = $closure_yield_type;
                 }
 
-                if (($storage->return_type === $storage->signature_return_type)
-                    && (!$storage->return_type
-                        || $storage->return_type->hasMixed()
-                        || TypeAnalyzer::isContainedBy(
-                            $codebase,
-                            $closure_return_type,
-                            $storage->return_type
-                        ))
-                ) {
-                    if ($function_type = $statements_analyzer->node_data->getType($this->function)) {
-                        /**
-                         * @var Type\Atomic\TFn
-                         */
-                        $closure_atomic = \array_values($function_type->getAtomicTypes())[0];
+                if ($function_type = $statements_analyzer->node_data->getType($this->function)) {
+                    /**
+                     * @var Type\Atomic\TFn
+                     */
+                    $closure_atomic = \array_values($function_type->getAtomicTypes())[0];
+
+                    if (($storage->return_type === $storage->signature_return_type)
+                        && (!$storage->return_type
+                            || $storage->return_type->hasMixed()
+                            || UnionTypeComparator::isContainedBy(
+                                $codebase,
+                                $closure_return_type,
+                                $storage->return_type
+                            ))
+                    ) {
                         $closure_atomic->return_type = $closure_return_type;
                     }
+
+                    $closure_atomic->is_pure = !$this->inferred_impure;
                 }
             }
         }
@@ -693,7 +794,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                     $input_type = new Type\Union([new TNamedObject($expected_exception)]);
                     $container_type = new Type\Union([new TNamedObject('Exception'), new TNamedObject('Throwable')]);
 
-                    if (!TypeAnalyzer::isContainedBy($codebase, $input_type, $container_type)) {
+                    if (!UnionTypeComparator::isContainedBy($codebase, $input_type, $container_type)) {
                         if (IssueBuffer::accepts(
                             new \Psalm\Issue\InvalidThrow(
                                 'Class supplied for @throws ' . $expected_exception
@@ -851,7 +952,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         $unused_params = [];
 
         foreach ($statements_analyzer->getUnusedVarLocations() as list($var_name, $original_location)) {
-            if (!array_key_exists(substr($var_name, 1), $storage->param_types)) {
+            if (!array_key_exists(substr($var_name, 1), $storage->param_lookup)) {
                 continue;
             }
 
@@ -859,7 +960,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 continue;
             }
 
-            $position = array_search(substr($var_name, 1), array_keys($storage->param_types), true);
+            $position = array_search(substr($var_name, 1), array_keys($storage->param_lookup), true);
 
             if ($position === false) {
                 throw new \UnexpectedValueException('$position should not be false here');
@@ -983,13 +1084,17 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             $signature_type_location = $function_param->signature_type_location;
 
             if ($signature_type && $signature_type_location && $signature_type->hasObjectType()) {
+                $referenced_type = $signature_type;
+                if ($referenced_type->isNullable()) {
+                    $referenced_type = clone $referenced_type;
+                    $referenced_type->removeType('null');
+                }
                 list($start, $end) = $signature_type_location->getSelectionBounds();
-
                 $codebase->analyzer->addOffsetReference(
                     $this->getFilePath(),
                     $start,
                     $end,
-                    (string) $signature_type
+                    (string) $referenced_type
                 );
             }
 
@@ -1108,7 +1213,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             if ($signature_type) {
                 $union_comparison_result = new TypeComparisonResult();
 
-                if (!TypeAnalyzer::isContainedBy(
+                if (!UnionTypeComparator::isContainedBy(
                     $codebase,
                     $param_type,
                     $signature_type,
@@ -1158,7 +1263,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
 
                 if ($default_type
                     && !$default_type->hasMixed()
-                    && !TypeAnalyzer::isContainedBy(
+                    && !UnionTypeComparator::isContainedBy(
                         $codebase,
                         $default_type,
                         $param_type,
@@ -1423,7 +1528,6 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         $manipulator = FunctionDocblockManipulator::getForFunction(
             $project_analyzer,
             $this->source->getFilePath(),
-            $this->getId(),
             $this->function
         );
 
@@ -1509,17 +1613,13 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
     ) {
         $storage = $this->getFunctionLikeStorage($statements_analyzer);
 
-        foreach ($storage->params as $i => $param) {
+        foreach ($storage->params as $param) {
             if ($param->by_ref && isset($context->vars_in_scope['$' . $param->name]) && !$param->is_variadic) {
                 $actual_type = $context->vars_in_scope['$' . $param->name];
-                $param_out_type = $param->type;
-
-                if (isset($storage->param_out_types[$i])) {
-                    $param_out_type = $storage->param_out_types[$i];
-                }
+                $param_out_type = $param->out_type ?: $param->type;
 
                 if ($param_out_type && !$actual_type->hasMixed() && $param->location) {
-                    if (!TypeAnalyzer::isContainedBy(
+                    if (!UnionTypeComparator::isContainedBy(
                         $codebase,
                         $actual_type,
                         $param_out_type,

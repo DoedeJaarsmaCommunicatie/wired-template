@@ -2,8 +2,8 @@
 namespace Psalm\Internal\Analyzer\Statements;
 
 use PhpParser;
-use Psalm\Internal\Analyzer\Statements\ExpressionAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\ArgumentAnalyzer;
+use Psalm\Internal\Analyzer\Statements\Expression\CastAnalyzer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\Internal\Taint\Sink;
 use Psalm\CodeLocation;
@@ -34,6 +34,18 @@ class EchoAnalyzer
             ExpressionAnalyzer::analyze($statements_analyzer, $expr, $context);
             $context->inside_call = false;
 
+            $expr_type = $statements_analyzer->node_data->getType($expr);
+
+            if ($codebase->taint && $expr_type) {
+                $expr_type = CastAnalyzer::castStringAttempt(
+                    $statements_analyzer,
+                    $context,
+                    $expr_type,
+                    $expr,
+                    false
+                );
+            }
+
             if ($codebase->taint
                 && $codebase->config->trackTaintsInPath($statements_analyzer->getFilePath())
             ) {
@@ -56,7 +68,7 @@ class EchoAnalyzer
                 $codebase->taint->addSink($echo_param_sink);
             }
 
-            if ($expr_type = $statements_analyzer->node_data->getType($expr)) {
+            if ($expr_type) {
                 if (ArgumentAnalyzer::verifyType(
                     $statements_analyzer,
                     $expr_type,
@@ -101,19 +113,22 @@ class EchoAnalyzer
             }
         }
 
-        if (!$context->collect_initializations
-            && !$context->collect_mutations
-            && ($context->mutation_free
-                || $context->external_mutation_free)
-        ) {
-            if (IssueBuffer::accepts(
-                new ImpureFunctionCall(
-                    'Cannot call echo from a mutation-free context',
-                    new CodeLocation($statements_analyzer, $stmt)
-                ),
-                $statements_analyzer->getSuppressedIssues()
-            )) {
-                // fall through
+        if (!$context->collect_initializations && !$context->collect_mutations) {
+            if ($context->mutation_free || $context->external_mutation_free) {
+                if (IssueBuffer::accepts(
+                    new ImpureFunctionCall(
+                        'Cannot call echo from a mutation-free context',
+                        new CodeLocation($statements_analyzer, $stmt)
+                    ),
+                    $statements_analyzer->getSuppressedIssues()
+                )) {
+                    // fall through
+                }
+            } elseif ($statements_analyzer->getSource() instanceof \Psalm\Internal\Analyzer\FunctionLikeAnalyzer
+                && $statements_analyzer->getSource()->track_mutations
+            ) {
+                $statements_analyzer->getSource()->inferred_has_mutation = true;
+                $statements_analyzer->getSource()->inferred_impure = true;
             }
         }
 

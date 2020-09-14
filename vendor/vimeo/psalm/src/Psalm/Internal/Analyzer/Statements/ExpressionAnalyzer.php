@@ -69,7 +69,10 @@ class ExpressionAnalyzer
                     $stmt,
                     $context->self,
                     $statements_analyzer,
-                    $codebase
+                    $codebase,
+                    false,
+                    true,
+                    false
                 );
             }
         }
@@ -205,7 +208,8 @@ class ExpressionAnalyzer
             return Expression\Fetch\InstancePropertyFetchAnalyzer::analyze(
                 $statements_analyzer,
                 $stmt,
-                $context
+                $context,
+                $array_assignment
             );
         }
 
@@ -304,17 +308,7 @@ class ExpressionAnalyzer
         }
 
         if ($stmt instanceof PhpParser\Node\Expr\Exit_) {
-            if ($stmt->expr) {
-                $context->inside_call = true;
-
-                if (self::analyze($statements_analyzer, $stmt->expr, $context) === false) {
-                    return false;
-                }
-
-                $context->inside_call = false;
-            }
-
-            return true;
+            return Expression\ExitAnalyzer::analyze($statements_analyzer, $stmt, $context);
         }
 
         if ($stmt instanceof PhpParser\Node\Expr\Include_) {

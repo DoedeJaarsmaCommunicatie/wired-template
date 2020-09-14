@@ -8,8 +8,10 @@ use Psalm\CodeLocation;
 use Psalm\Context;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Issue\InaccessibleProperty;
+use Psalm\Issue\InternalClass;
 use Psalm\Issue\InvalidClass;
 use Psalm\Issue\MissingDependency;
+use Psalm\Issue\PsalmInternalError;
 use Psalm\Issue\ReservedWord;
 use Psalm\Issue\UndefinedClass;
 use Psalm\Issue\UndefinedDocblockClass;
@@ -564,7 +566,8 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer implements StatementsSou
                 $fq_class_name,
                 $property_name,
                 true,
-                $context
+                $context,
+                $code_location
             );
 
             if ($property_visible !== null) {

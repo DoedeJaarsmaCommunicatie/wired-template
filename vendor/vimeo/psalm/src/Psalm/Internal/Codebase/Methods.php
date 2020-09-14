@@ -6,11 +6,10 @@ use function assert;
 use function count;
 use function explode;
 use PhpParser;
-use function preg_replace;
 use Psalm\Codebase;
 use Psalm\CodeLocation;
 use Psalm\Context;
-use Psalm\Internal\Analyzer\TypeAnalyzer;
+use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Provider\ClassLikeStorageProvider;
 use Psalm\Internal\Provider\FileReferenceProvider;
@@ -91,12 +90,13 @@ class Methods
         ?string $calling_method_id = null,
         CodeLocation $code_location = null,
         StatementsSource $source = null,
-        string $source_file_path = null
+        string $source_file_path = null,
+        bool $use_method_existence_provider = true
     ) : bool {
         $fq_class_name = $method_id->fq_class_name;
         $method_name = $method_id->method_name;
 
-        if ($this->existence_provider->has($fq_class_name)) {
+        if ($use_method_existence_provider && $this->existence_provider->has($fq_class_name)) {
             $method_exists = $this->existence_provider->doesMethodExist(
                 $fq_class_name,
                 $method_name,
@@ -119,6 +119,14 @@ class Methods
             return false;
         }
 
+        $source_file_path = $source ? $source->getFilePath() : $source_file_path;
+
+        $calling_class_name = $source ? $source->getFQCLN() : null;
+
+        if (!$calling_class_name && $calling_method_id) {
+            $calling_class_name = explode('::', $calling_method_id)[0];
+        }
+
         if (isset($class_storage->declaring_method_ids[$method_name])) {
             $declaring_method_id = $class_storage->declaring_method_ids[$method_name];
 
@@ -128,15 +136,15 @@ class Methods
 
             $declaring_fq_class_name = strtolower($declaring_method_id->fq_class_name);
 
-            if ($source && $declaring_fq_class_name !== strtolower((string) $source->getFQCLN())) {
+            if ($declaring_fq_class_name !== strtolower((string) $calling_class_name)) {
                 if ($calling_method_id) {
                     $this->file_reference_provider->addMethodReferenceToClass(
                         $calling_method_id,
                         $declaring_fq_class_name
                     );
-                } else {
+                } elseif ($source_file_path) {
                     $this->file_reference_provider->addNonMethodReferenceToClass(
-                        $source->getFilePath(),
+                        $source_file_path,
                         $declaring_fq_class_name
                     );
                 }
@@ -237,7 +245,7 @@ class Methods
             return true;
         }
 
-        if ($source && $fq_class_name !== strtolower((string) $source->getFQCLN())) {
+        if ($source_file_path && $fq_class_name !== strtolower((string) $calling_class_name)) {
             if ($calling_method_id) {
                 $this->file_reference_provider->addMethodReferenceToClass(
                     $calling_method_id,
@@ -245,7 +253,7 @@ class Methods
                 );
             } else {
                 $this->file_reference_provider->addNonMethodReferenceToClass(
-                    $source->getFilePath(),
+                    $source_file_path,
                     $fq_class_name
                 );
             }
@@ -616,14 +624,13 @@ class Methods
     }
 
     /**
-     * @param  string $self_class
      * @param  array<int, PhpParser\Node\Arg>|null $args
      *
      * @return Type\Union|null
      */
     public function getMethodReturnType(
         MethodIdentifier $method_id,
-        &$self_class,
+        ?string &$self_class,
         \Psalm\Internal\Analyzer\SourceAnalyzer $source_analyzer = null,
         array $args = null
     ) {
@@ -762,13 +769,13 @@ class Methods
                 if ($candidate_type
                     && $source_analyzer
                 ) {
-                    $old_contained_by_new = TypeAnalyzer::isContainedBy(
+                    $old_contained_by_new = UnionTypeComparator::isContainedBy(
                         $source_analyzer->getCodebase(),
                         $candidate_type,
                         $overridden_return_type
                     );
 
-                    $new_contained_by_old = TypeAnalyzer::isContainedBy(
+                    $new_contained_by_old = UnionTypeComparator::isContainedBy(
                         $source_analyzer->getCodebase(),
                         $overridden_return_type,
                         $candidate_type
@@ -1056,5 +1063,25 @@ class Methods
         }
 
         return $class_storage->methods[$method_name];
+    }
+
+    /**
+     * @return bool
+     */
+    public function hasStorage(MethodIdentifier $method_id)
+    {
+        try {
+            $class_storage = $this->classlike_storage_provider->get($method_id->fq_class_name);
+        } catch (\InvalidArgumentException $e) {
+            return false;
+        }
+
+        $method_name = $method_id->method_name;
+
+        if (!isset($class_storage->methods[$method_name])) {
+            return false;
+        }
+
+        return true;
     }
 }

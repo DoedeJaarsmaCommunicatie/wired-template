@@ -5,10 +5,11 @@ use PhpParser;
 use Psalm\Codebase;
 use Psalm\Internal\Analyzer\ClassLikeAnalyzer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
-use Psalm\Internal\Analyzer\TypeAnalyzer;
+use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\CodeLocation;
 use Psalm\FileSource;
 use Psalm\Issue\DocblockTypeContradiction;
+use Psalm\Issue\RedundantIdentityWithTrue;
 use Psalm\Issue\RedundantCondition;
 use Psalm\Issue\RedundantConditionGivenDocblockType;
 use Psalm\Issue\TypeDoesNotContainNull;
@@ -16,6 +17,7 @@ use Psalm\Issue\TypeDoesNotContainType;
 use Psalm\Issue\UnevaluatedCode;
 use Psalm\IssueBuffer;
 use Psalm\Type;
+use Psalm\Type\Atomic\TBool;
 use function substr;
 use function count;
 use function strtolower;
@@ -45,7 +47,8 @@ class AssertionFinder
         FileSource $source,
         Codebase $codebase = null,
         bool $inside_negation = false,
-        bool $cache = true
+        bool $cache = true,
+        bool $inside_conditional = true
     ) {
         $if_types = [];
 
@@ -86,7 +89,7 @@ class AssertionFinder
                                 $source->getTemplateTypeMap() ?: []
                             );
 
-                            if (!TypeAnalyzer::canExpressionTypesBeIdentical(
+                            if (!UnionTypeComparator::canExpressionTypesBeIdentical(
                                 $codebase,
                                 $instanceof_type,
                                 $var_type
@@ -123,6 +126,36 @@ class AssertionFinder
             return $if_types;
         }
 
+        if ($conditional instanceof PhpParser\Node\Expr\Assign) {
+            $var_name = ExpressionIdentifier::getArrayVarId(
+                $conditional->var,
+                $this_class_name,
+                $source
+            );
+
+            $candidate_if_types = $inside_conditional
+                ? self::scrapeAssertions(
+                    $conditional->expr,
+                    $this_class_name,
+                    $source,
+                    $codebase,
+                    $inside_negation,
+                    $cache,
+                    $inside_conditional
+                )
+                : [];
+
+            if ($var_name) {
+                if ($candidate_if_types) {
+                    $if_types[$var_name] = [['>' . \json_encode($candidate_if_types)]];
+                } else {
+                    $if_types[$var_name] = [['!falsy']];
+                }
+            }
+
+            return $if_types;
+        }
+
         $var_name = ExpressionIdentifier::getArrayVarId(
             $conditional,
             $this_class_name,
@@ -139,20 +172,6 @@ class AssertionFinder
             }
         }
 
-        if ($conditional instanceof PhpParser\Node\Expr\Assign) {
-            $var_name = ExpressionIdentifier::getArrayVarId(
-                $conditional->var,
-                $this_class_name,
-                $source
-            );
-
-            if ($var_name) {
-                $if_types[$var_name] = [['!falsy']];
-            }
-
-            return $if_types;
-        }
-
         if ($conditional instanceof PhpParser\Node\Expr\BooleanNot) {
             $expr_assertions = null;
 
@@ -167,7 +186,8 @@ class AssertionFinder
                     $source,
                     $codebase,
                     !$inside_negation,
-                    $cache
+                    $cache,
+                    $inside_conditional
                 );
 
                 if ($cache && $source instanceof StatementsAnalyzer) {
@@ -179,7 +199,12 @@ class AssertionFinder
                 throw new \UnexpectedValueException('Assertions should be set');
             }
 
+            if (count($expr_assertions) !== 1) {
+                return [];
+            }
+
             $if_types = \Psalm\Type\Algebra::negateTypes($expr_assertions);
+
             return $if_types;
         }
 
@@ -192,7 +217,8 @@ class AssertionFinder
                 $source,
                 $codebase,
                 false,
-                $cache
+                $cache,
+                $inside_conditional
             );
 
             return $if_types;
@@ -207,7 +233,8 @@ class AssertionFinder
                 $source,
                 $codebase,
                 false,
-                $cache
+                $cache,
+                $inside_conditional
             );
 
             return $if_types;
@@ -218,7 +245,8 @@ class AssertionFinder
         ) {
             $min_count = null;
             $count_equality_position = self::hasNonEmptyCountEqualityCheck($conditional, $min_count);
-            $typed_value_position = self::hasTypedValueComparison($conditional, $source);
+            $min_comparison = null;
+            $positive_number_position = self::hasPositiveNumberCheck($conditional, $min_comparison);
 
             if ($count_equality_position) {
                 if ($count_equality_position === self::ASSIGNMENT_TO_RIGHT) {
@@ -249,22 +277,55 @@ class AssertionFinder
                 return $if_types;
             }
 
-            if ($typed_value_position) {
-                if ($typed_value_position === self::ASSIGNMENT_TO_RIGHT) {
-                    /** @var PhpParser\Node\Expr $conditional->right */
+            if ($positive_number_position) {
+                if ($positive_number_position === self::ASSIGNMENT_TO_RIGHT) {
                     $var_name = ExpressionIdentifier::getArrayVarId(
                         $conditional->left,
                         $this_class_name,
                         $source
                     );
-                } elseif ($typed_value_position === self::ASSIGNMENT_TO_LEFT) {
-                    $var_name = null;
+                    $value_node = $conditional->left;
                 } else {
-                    throw new \UnexpectedValueException('$typed_value_position value');
+                    $var_name = ExpressionIdentifier::getArrayVarId(
+                        $conditional->right,
+                        $this_class_name,
+                        $source
+                    );
+                    $value_node = $conditional->right;
+                }
+
+                if ($codebase
+                    && $source instanceof StatementsAnalyzer
+                    && ($var_type = $source->node_data->getType($value_node))
+                    && $var_type->isSingle()
+                    && $var_type->hasBool()
+                    && $min_comparison > 1
+                ) {
+                    if ($var_type->from_docblock) {
+                        if (IssueBuffer::accepts(
+                            new DocblockTypeContradiction(
+                                $var_type . ' cannot be greater than ' . $min_comparison,
+                                new CodeLocation($source, $conditional)
+                            ),
+                            $source->getSuppressedIssues()
+                        )) {
+                            // fall through
+                        }
+                    } else {
+                        if (IssueBuffer::accepts(
+                            new TypeDoesNotContainType(
+                                $var_type . ' cannot be greater than ' . $min_comparison,
+                                new CodeLocation($source, $conditional)
+                            ),
+                            $source->getSuppressedIssues()
+                        )) {
+                            // fall through
+                        }
+                    }
                 }
 
                 if ($var_name) {
-                    $if_types[$var_name] = [['=isset']];
+                    $if_types[$var_name] = [[($min_comparison === 1 ? '' : '=') . 'positive-numeric']];
                 }
 
                 return $if_types;
@@ -279,6 +340,9 @@ class AssertionFinder
             $min_count = null;
             $count_equality_position = self::hasNonEmptyCountEqualityCheck($conditional, $min_count);
             $typed_value_position = self::hasTypedValueComparison($conditional, $source);
+
+            $max_count = null;
+            $count_inequality_position = self::hasLessThanCountEqualityCheck($conditional, $max_count);
 
             if ($count_equality_position) {
                 if ($count_equality_position === self::ASSIGNMENT_TO_LEFT) {
@@ -299,6 +363,31 @@ class AssertionFinder
                         $if_types[$var_name] = [['=has-at-least-' . $min_count]];
                     } else {
                         $if_types[$var_name] = [['=non-empty-countable']];
+                    }
+                }
+
+                return $if_types;
+            }
+
+            if ($count_inequality_position) {
+                if ($count_inequality_position === self::ASSIGNMENT_TO_RIGHT) {
+                    $count_expr = $conditional->left;
+                } else {
+                    throw new \UnexpectedValueException('$count_inequality_position value');
+                }
+
+                /** @var PhpParser\Node\Expr\FuncCall $count_expr */
+                $var_name = ExpressionIdentifier::getArrayVarId(
+                    $count_expr->args[0]->value,
+                    $this_class_name,
+                    $source
+                );
+
+                if ($var_name) {
+                    if ($max_count) {
+                        $if_types[$var_name] = [['!has-at-least-' . ($max_count + 1)]];
+                    } else {
+                        $if_types[$var_name] = [['!non-empty-countable']];
                     }
                 }
 
@@ -425,7 +514,8 @@ class AssertionFinder
                 $source,
                 $codebase,
                 $inside_negation,
-                false
+                false,
+                $inside_conditional
             );
         }
 
@@ -444,11 +534,12 @@ class AssertionFinder
         FileSource $source,
         Codebase $codebase = null,
         bool $inside_negation = false,
-        bool $cache = true
+        bool $cache = true,
+        bool $inside_conditional = true
     ) {
         $if_types = [];
 
-        $null_position = self::hasNullVariable($conditional);
+        $null_position = self::hasNullVariable($conditional, $source);
         $false_position = self::hasFalseVariable($conditional);
         $true_position = self::hasTrueVariable($conditional);
         $empty_array_position = self::hasEmptyArrayVariable($conditional);
@@ -490,11 +581,11 @@ class AssertionFinder
             ) {
                 $null_type = Type::getNull();
 
-                if (!TypeAnalyzer::isContainedBy(
+                if (!UnionTypeComparator::isContainedBy(
                     $codebase,
                     $var_type,
                     $null_type
-                ) && !TypeAnalyzer::isContainedBy(
+                ) && !UnionTypeComparator::isContainedBy(
                     $codebase,
                     $null_type,
                     $var_type
@@ -591,13 +682,27 @@ class AssertionFinder
                 && ($var_type = $source->node_data->getType($base_conditional))
             ) {
                 if ($conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical) {
+                    $config = $source->getCodebase()->config;
+
+                    if ($config->strict_binary_operands
+                        && $var_type->isSingle()
+                        && $var_type->hasBool()
+                        && !$var_type->from_docblock
+                    ) {
+                        if (IssueBuffer::accepts(
+                            new RedundantIdentityWithTrue(
+                                'The "=== true" part of this comparison is redundant',
+                                new CodeLocation($source, $conditional)
+                            ),
+                            $source->getSuppressedIssues()
+                        )) {
+                            // fall through
+                        }
+                    }
+
                     $true_type = Type::getTrue();
 
-                    if (!TypeAnalyzer::isContainedBy(
-                        $codebase,
-                        $var_type,
-                        $true_type
-                    ) && !TypeAnalyzer::isContainedBy(
+                    if (!UnionTypeComparator::canExpressionTypesBeIdentical(
                         $codebase,
                         $true_type,
                         $var_type
@@ -674,7 +779,8 @@ class AssertionFinder
                             $source,
                             $codebase,
                             $inside_negation,
-                            $cache
+                            $cache,
+                            $inside_conditional
                         );
 
                         if ($source instanceof StatementsAnalyzer && $cache) {
@@ -701,11 +807,7 @@ class AssertionFinder
                 if ($conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical) {
                     $false_type = Type::getFalse();
 
-                    if (!TypeAnalyzer::isContainedBy(
-                        $codebase,
-                        $var_type,
-                        $false_type
-                    ) && !TypeAnalyzer::isContainedBy(
+                    if (!UnionTypeComparator::canExpressionTypesBeIdentical(
                         $codebase,
                         $false_type,
                         $var_type
@@ -768,7 +870,7 @@ class AssertionFinder
             ) {
                 $empty_array_type = Type::getEmptyArray();
 
-                if (!TypeAnalyzer::canExpressionTypesBeIdentical(
+                if (!UnionTypeComparator::canExpressionTypesBeIdentical(
                     $codebase,
                     $empty_array_type,
                     $var_type
@@ -901,9 +1003,9 @@ class AssertionFinder
                     $source->getAliases()
                 );
 
-                if ($var_type === 'self') {
+                if ($var_type === 'self' || $var_type === 'static') {
                     $var_type = $this_class_name;
-                } elseif ($var_type === 'parent' || $var_type === 'static') {
+                } elseif ($var_type === 'parent') {
                     $var_type = null;
                 }
 
@@ -986,7 +1088,10 @@ class AssertionFinder
             if ($codebase
                 && $other_type
                 && $var_type
-                && $conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical
+                && ($conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical
+                    || ($other_type->isString()
+                        && $var_type->isString())
+                )
             ) {
                 $parent_source = $source->getSource();
 
@@ -997,7 +1102,7 @@ class AssertionFinder
                             && $other_type->getSingleStringLiteral()->value === $this_class_name))
                 ) {
                     // do nothing
-                } elseif (!TypeAnalyzer::canExpressionTypesBeIdentical(
+                } elseif (!UnionTypeComparator::canExpressionTypesBeIdentical(
                     $codebase,
                     $other_type,
                     $var_type
@@ -1037,7 +1142,7 @@ class AssertionFinder
             && $other_type
             && $conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical
         ) {
-            if (!TypeAnalyzer::canExpressionTypesBeIdentical($codebase, $var_type, $other_type)) {
+            if (!UnionTypeComparator::canExpressionTypesBeIdentical($codebase, $var_type, $other_type)) {
                 if (IssueBuffer::accepts(
                     new TypeDoesNotContainType(
                         $var_type->getId() . ' cannot be identical to ' . $other_type->getId(),
@@ -1065,15 +1170,18 @@ class AssertionFinder
         FileSource $source,
         Codebase $codebase = null,
         bool $inside_negation = false,
-        bool $cache = true
+        bool $cache = true,
+        bool $inside_conditional = true
     ) {
         $if_types = [];
 
-        $null_position = self::hasNullVariable($conditional);
+        $null_position = self::hasNullVariable($conditional, $source);
         $false_position = self::hasFalseVariable($conditional);
         $true_position = self::hasTrueVariable($conditional);
         $empty_array_position = self::hasEmptyArrayVariable($conditional);
         $gettype_position = self::hasGetTypeCheck($conditional);
+        $count = null;
+        $count_inequality_position = self::hasNotCountEqualityCheck($conditional, $count);
 
         if ($null_position !== null) {
             if ($null_position === self::ASSIGNMENT_TO_RIGHT) {
@@ -1109,11 +1217,11 @@ class AssertionFinder
                 if ($conditional instanceof PhpParser\Node\Expr\BinaryOp\NotIdentical) {
                     $null_type = Type::getNull();
 
-                    if (!TypeAnalyzer::isContainedBy(
+                    if (!UnionTypeComparator::isContainedBy(
                         $codebase,
                         $var_type,
                         $null_type
-                    ) && !TypeAnalyzer::isContainedBy(
+                    ) && !UnionTypeComparator::isContainedBy(
                         $codebase,
                         $null_type,
                         $var_type
@@ -1181,7 +1289,8 @@ class AssertionFinder
                         $source,
                         $codebase,
                         $inside_negation,
-                        $cache
+                        $cache,
+                        $inside_conditional
                     );
 
                     if ($source instanceof StatementsAnalyzer && $cache) {
@@ -1207,11 +1316,11 @@ class AssertionFinder
                 if ($conditional instanceof PhpParser\Node\Expr\BinaryOp\NotIdentical) {
                     $false_type = Type::getFalse();
 
-                    if (!TypeAnalyzer::isContainedBy(
+                    if (!UnionTypeComparator::isContainedBy(
                         $codebase,
                         $var_type,
                         $false_type
-                    ) && !TypeAnalyzer::isContainedBy(
+                    ) && !UnionTypeComparator::isContainedBy(
                         $codebase,
                         $false_type,
                         $var_type
@@ -1288,7 +1397,8 @@ class AssertionFinder
                             $source,
                             $codebase,
                             $inside_negation,
-                            $cache
+                            $cache,
+                            $inside_conditional
                         );
 
                         if ($source instanceof StatementsAnalyzer && $cache) {
@@ -1315,11 +1425,11 @@ class AssertionFinder
                 if ($conditional instanceof PhpParser\Node\Expr\BinaryOp\NotIdentical) {
                     $true_type = Type::getTrue();
 
-                    if (!TypeAnalyzer::isContainedBy(
+                    if (!UnionTypeComparator::isContainedBy(
                         $codebase,
                         $var_type,
                         $true_type
-                    ) && !TypeAnalyzer::isContainedBy(
+                    ) && !UnionTypeComparator::isContainedBy(
                         $codebase,
                         $true_type,
                         $var_type
@@ -1346,6 +1456,33 @@ class AssertionFinder
                             }
                         }
                     }
+                }
+            }
+
+            return $if_types;
+        }
+
+        if ($count_inequality_position) {
+            if ($count_inequality_position === self::ASSIGNMENT_TO_RIGHT) {
+                $count_expr = $conditional->left;
+            } elseif ($count_inequality_position === self::ASSIGNMENT_TO_LEFT) {
+                $count_expr = $conditional->right;
+            } else {
+                throw new \UnexpectedValueException('$count_equality_position value');
+            }
+
+            /** @var PhpParser\Node\Expr\FuncCall $count_expr */
+            $var_name = ExpressionIdentifier::getArrayVarId(
+                $count_expr->args[0]->value,
+                $this_class_name,
+                $source
+            );
+
+            if ($var_name) {
+                if ($count) {
+                    $if_types[$var_name] = [['!has-exactly-' . $count]];
+                } else {
+                    $if_types[$var_name] = [['non-empty-countable']];
                 }
             }
 
@@ -1382,11 +1519,11 @@ class AssertionFinder
                 if ($conditional instanceof PhpParser\Node\Expr\BinaryOp\NotIdentical) {
                     $empty_array_type = Type::getEmptyArray();
 
-                    if (!TypeAnalyzer::isContainedBy(
+                    if (!UnionTypeComparator::isContainedBy(
                         $codebase,
                         $var_type,
                         $empty_array_type
-                    ) && !TypeAnalyzer::isContainedBy(
+                    ) && !UnionTypeComparator::isContainedBy(
                         $codebase,
                         $empty_array_type,
                         $var_type
@@ -1506,9 +1643,9 @@ class AssertionFinder
                     $source->getAliases()
                 );
 
-                if ($var_type === 'self') {
+                if ($var_type === 'self' || $var_type === 'static') {
                     $var_type = $this_class_name;
-                } elseif ($var_type === 'parent' || $var_type === 'static') {
+                } elseif ($var_type === 'parent') {
                     $var_type = null;
                 }
             } else {
@@ -1601,7 +1738,7 @@ class AssertionFinder
                                 && $other_type->getSingleStringLiteral()->value === $this_class_name))
                     ) {
                         // do nothing
-                    } elseif (!TypeAnalyzer::canExpressionTypesBeIdentical(
+                    } elseif (!UnionTypeComparator::canExpressionTypesBeIdentical(
                         $codebase,
                         $other_type,
                         $var_type
@@ -2074,7 +2211,7 @@ class AssertionFinder
             return;
         }
 
-        if (!TypeAnalyzer::isContainedBy(
+        if (!UnionTypeComparator::isContainedBy(
             $codebase,
             $first_var_type,
             $expected_type
@@ -2168,6 +2305,24 @@ class AssertionFinder
 
         if ($if_true_assertions) {
             foreach ($if_true_assertions as $assertion) {
+                $assertion = clone $assertion;
+
+                foreach ($assertion->rule as $i => $and_rules) {
+                    foreach ($and_rules as $j => $rule) {
+                        if (strpos($rule, 'scalar-class-constant(') === 0) {
+                            $codebase = $source->getCodebase();
+
+                            $assertion->rule[$i][$j] = \Psalm\Internal\Type\TypeExpander::expandUnion(
+                                $codebase,
+                                Type::parseString(substr($rule, 22, -1)),
+                                null,
+                                null,
+                                null
+                            )->getId();
+                        }
+                    }
+                }
+
                 if (is_int($assertion->var_id) && isset($expr->args[$assertion->var_id])) {
                     if ($assertion->var_id === 0) {
                         $var_name = $first_var_name;
@@ -2216,6 +2371,24 @@ class AssertionFinder
             $negated_prefix = !$negate ? '!' : '';
 
             foreach ($if_false_assertions as $assertion) {
+                $assertion = clone $assertion;
+
+                foreach ($assertion->rule as $i => $and_rules) {
+                    foreach ($and_rules as $j => $rule) {
+                        if (strpos($rule, 'scalar-class-constant(') === 0) {
+                            $codebase = $source->getCodebase();
+
+                            $assertion->rule[$i][$j] = \Psalm\Internal\Type\TypeExpander::expandUnion(
+                                $codebase,
+                                Type::parseString(substr($rule, 22, -1)),
+                                null,
+                                null,
+                                null
+                            )->getId();
+                        }
+                    }
+                }
+
                 if (is_int($assertion->var_id) && isset($expr->args[$assertion->var_id])) {
                     if ($assertion->var_id === 0) {
                         $var_name = $first_var_name;
@@ -2323,8 +2496,10 @@ class AssertionFinder
      *
      * @return  int|null
      */
-    protected static function hasNullVariable(PhpParser\Node\Expr\BinaryOp $conditional)
-    {
+    protected static function hasNullVariable(
+        PhpParser\Node\Expr\BinaryOp $conditional,
+        FileSource $source
+    ) {
         if ($conditional->right instanceof PhpParser\Node\Expr\ConstFetch
             && strtolower($conditional->right->name->parts[0]) === 'null'
         ) {
@@ -2335,6 +2510,13 @@ class AssertionFinder
             && strtolower($conditional->left->name->parts[0]) === 'null'
         ) {
             return self::ASSIGNMENT_TO_LEFT;
+        }
+
+        if ($source instanceof StatementsAnalyzer
+            && ($right_type = $source->node_data->getType($conditional->right))
+            && $right_type->isNull()
+        ) {
+            return self::ASSIGNMENT_TO_RIGHT;
         }
 
         return null;
@@ -2560,6 +2742,146 @@ class AssertionFinder
 
         if ($right_count
             && $conditional->left instanceof PhpParser\Node\Scalar\LNumber
+            && $operator_less_than_or_equal
+            && $conditional->left->value >= (
+                $conditional instanceof PhpParser\Node\Expr\BinaryOp\Smaller ? 0 : 1
+            )
+        ) {
+            $min_count = $conditional->left->value +
+                ($conditional instanceof PhpParser\Node\Expr\BinaryOp\Smaller ? 1 : 0);
+
+            return self::ASSIGNMENT_TO_LEFT;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param   PhpParser\Node\Expr\BinaryOp    $conditional
+     *
+     * @return  false|int
+     */
+    protected static function hasLessThanCountEqualityCheck(
+        PhpParser\Node\Expr\BinaryOp $conditional,
+        ?int &$max_count
+    ) {
+        $left_count = $conditional->left instanceof PhpParser\Node\Expr\FuncCall
+            && $conditional->left->name instanceof PhpParser\Node\Name
+            && strtolower($conditional->left->name->parts[0]) === 'count'
+            && $conditional->left->args;
+
+        $operator_greater_than_or_equal =
+            $conditional instanceof PhpParser\Node\Expr\BinaryOp\SmallerOrEqual
+            || $conditional instanceof PhpParser\Node\Expr\BinaryOp\Smaller;
+
+        if ($left_count
+            && $conditional->right instanceof PhpParser\Node\Scalar\LNumber
+            && $operator_greater_than_or_equal
+            && $conditional->right->value >= (
+                $conditional instanceof PhpParser\Node\Expr\BinaryOp\Smaller ? 0 : 1
+            )
+        ) {
+            $max_count = $conditional->right->value -
+                ($conditional instanceof PhpParser\Node\Expr\BinaryOp\Smaller ? 0 : 1);
+
+            return self::ASSIGNMENT_TO_RIGHT;
+        }
+
+        $right_count = $conditional->right instanceof PhpParser\Node\Expr\FuncCall
+            && $conditional->right->name instanceof PhpParser\Node\Name
+            && strtolower($conditional->right->name->parts[0]) === 'count'
+            && $conditional->right->args;
+
+        $operator_less_than_or_equal =
+            $conditional instanceof PhpParser\Node\Expr\BinaryOp\GreaterOrEqual
+            || $conditional instanceof PhpParser\Node\Expr\BinaryOp\Greater;
+
+        if ($right_count
+            && $conditional->left instanceof PhpParser\Node\Scalar\LNumber
+            && $operator_less_than_or_equal
+            && $conditional->left->value >= (
+                $conditional instanceof PhpParser\Node\Expr\BinaryOp\Greater ? 0 : 1
+            )
+        ) {
+            $max_count = $conditional->left->value -
+                ($conditional instanceof PhpParser\Node\Expr\BinaryOp\Greater ? 0 : 1);
+
+            return self::ASSIGNMENT_TO_LEFT;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  PhpParser\Node\Expr\BinaryOp\NotIdentical|PhpParser\Node\Expr\BinaryOp\NotEqual $conditional
+     *
+     * @return  false|int
+     */
+    protected static function hasNotCountEqualityCheck(
+        PhpParser\Node\Expr\BinaryOp $conditional,
+        ?int &$count
+    ) {
+        $left_count = $conditional->left instanceof PhpParser\Node\Expr\FuncCall
+            && $conditional->left->name instanceof PhpParser\Node\Name
+            && strtolower($conditional->left->name->parts[0]) === 'count'
+            && $conditional->left->args;
+
+        if ($left_count && $conditional->right instanceof PhpParser\Node\Scalar\LNumber) {
+            $count = $conditional->right->value;
+
+            return self::ASSIGNMENT_TO_RIGHT;
+        }
+
+        $right_count = $conditional->right instanceof PhpParser\Node\Expr\FuncCall
+            && $conditional->right->name instanceof PhpParser\Node\Name
+            && strtolower($conditional->right->name->parts[0]) === 'count'
+            && $conditional->right->args;
+
+        if ($right_count && $conditional->left instanceof PhpParser\Node\Scalar\LNumber) {
+            $count = $conditional->left->value;
+
+            return self::ASSIGNMENT_TO_LEFT;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param   PhpParser\Node\Expr\BinaryOp    $conditional
+     *
+     * @return  false|int
+     */
+    protected static function hasPositiveNumberCheck(
+        PhpParser\Node\Expr\BinaryOp $conditional,
+        ?int &$min_count
+    ) {
+        $operator_greater_than_or_equal =
+            $conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical
+            || $conditional instanceof PhpParser\Node\Expr\BinaryOp\Equal
+            || $conditional instanceof PhpParser\Node\Expr\BinaryOp\Greater
+            || $conditional instanceof PhpParser\Node\Expr\BinaryOp\GreaterOrEqual;
+
+        if ($conditional->right instanceof PhpParser\Node\Scalar\LNumber
+            && $operator_greater_than_or_equal
+            && $conditional->right->value >= (
+                $conditional instanceof PhpParser\Node\Expr\BinaryOp\Greater
+                ? 0
+                : 1
+            )
+        ) {
+            $min_count = $conditional->right->value +
+                ($conditional instanceof PhpParser\Node\Expr\BinaryOp\Greater ? 1 : 0);
+
+            return self::ASSIGNMENT_TO_RIGHT;
+        }
+
+        $operator_less_than_or_equal =
+            $conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical
+            || $conditional instanceof PhpParser\Node\Expr\BinaryOp\Equal
+            || $conditional instanceof PhpParser\Node\Expr\BinaryOp\Smaller
+            || $conditional instanceof PhpParser\Node\Expr\BinaryOp\SmallerOrEqual;
+
+        if ($conditional->left instanceof PhpParser\Node\Scalar\LNumber
             && $operator_less_than_or_equal
             && $conditional->left->value >= (
                 $conditional instanceof PhpParser\Node\Expr\BinaryOp\Smaller ? 0 : 1

@@ -1,13 +1,11 @@
 <?php
 namespace Psalm\Internal\Provider;
 
-use const PHP_VERSION;
 use PhpParser;
 use Psalm\CodeLocation;
 use Psalm\Plugin\Hook\MethodExistenceProviderInterface;
 use Psalm\StatementsSource;
 use function strtolower;
-use function version_compare;
 
 class MethodExistenceProvider
 {
@@ -39,7 +37,6 @@ class MethodExistenceProvider
         $callable = \Closure::fromCallable([$class, 'doesMethodExist']);
 
         foreach ($class::getClassLikeNames() as $fq_classlike_name) {
-            /** @psalm-suppress MixedTypeCoercion */
             $this->registerClosure($fq_classlike_name, $callable);
         }
     }

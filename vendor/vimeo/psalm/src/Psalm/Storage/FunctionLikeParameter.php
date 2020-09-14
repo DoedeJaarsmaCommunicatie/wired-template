@@ -26,6 +26,11 @@ class FunctionLikeParameter
     /**
      * @var Type\Union|null
      */
+    public $out_type;
+
+    /**
+     * @var Type\Union|null
+     */
     public $signature_type;
 
     /**
@@ -77,6 +82,11 @@ class FunctionLikeParameter
      * @var bool
      */
     public $assert_untainted = false;
+
+    /**
+     * @var bool
+     */
+    public $type_inferred = false;
 
     /**
      * @param string        $name

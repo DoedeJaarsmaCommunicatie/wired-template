@@ -8,11 +8,14 @@ use Psalm\Internal\Analyzer\NamespaceAnalyzer;
 use Psalm\Internal\Analyzer\Statements\ExpressionAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\CallAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\ExpressionIdentifier;
+use Psalm\Internal\Analyzer\Statements\Expression\Assignment\InstancePropertyAssignmentAnalyzer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\CodeLocation;
 use Psalm\Context;
 use Psalm\Issue\DeprecatedProperty;
+use Psalm\Issue\ImpurePropertyAssignment;
+use Psalm\Issue\ImpurePropertyFetch;
 use Psalm\Issue\InvalidPropertyFetch;
 use Psalm\Issue\InternalProperty;
 use Psalm\Issue\MissingPropertyType;
@@ -28,6 +31,7 @@ use Psalm\Issue\UndefinedPropertyFetch;
 use Psalm\Issue\UndefinedThisPropertyFetch;
 use Psalm\Issue\UninitializedProperty;
 use Psalm\IssueBuffer;
+use Psalm\Storage\PropertyStorage;
 use Psalm\Type;
 use Psalm\Storage\ClassLikeStorage;
 use Psalm\Type\Atomic\TGenericObject;
@@ -49,7 +53,8 @@ class InstancePropertyFetchAnalyzer
     public static function analyze(
         StatementsAnalyzer $statements_analyzer,
         PhpParser\Node\Expr\PropertyFetch $stmt,
-        Context $context
+        Context $context,
+        bool $in_assignment = false
     ) : bool {
         if (!$stmt->name instanceof PhpParser\Node\Identifier) {
             if (ExpressionAnalyzer::analyze($statements_analyzer, $stmt->name, $context) === false) {
@@ -177,12 +182,15 @@ class InstancePropertyFetchAnalyzer
 
                         $property_id = $lhs_type_part->value . '::$' . $stmt->name->name;
 
+                        $class_storage = $codebase->classlike_storage_provider->get($lhs_type_part->value);
+
                         self::processTaints(
                             $statements_analyzer,
                             $stmt,
                             $stmt_type,
                             $property_id,
-                            $codebase->classlike_storage_provider->get($lhs_type_part->value)
+                            $class_storage,
+                            $in_assignment
                         );
 
                         $codebase->properties->propertyExists(
@@ -204,6 +212,29 @@ class InstancePropertyFetchAnalyzer
                                 $stmt->name,
                                 $property_id
                             );
+                        }
+
+                        if (!$context->collect_mutations
+                            && !$context->collect_initializations
+                            && !($class_storage->external_mutation_free
+                                && $stmt_type->allow_mutations)
+                        ) {
+                            if ($context->pure) {
+                                if (IssueBuffer::accepts(
+                                    new ImpurePropertyFetch(
+                                        'Cannot access a property on a mutable object from a pure context',
+                                        new CodeLocation($statements_analyzer, $stmt)
+                                    ),
+                                    $statements_analyzer->getSuppressedIssues()
+                                )) {
+                                    // fall through
+                                }
+                            } elseif ($statements_analyzer->getSource()
+                                    instanceof \Psalm\Internal\Analyzer\FunctionLikeAnalyzer
+                                && $statements_analyzer->getSource()->track_mutations
+                            ) {
+                                $statements_analyzer->getSource()->inferred_impure = true;
+                            }
                         }
                     }
                 }
@@ -498,39 +529,47 @@ class InstancePropertyFetchAnalyzer
             $get_method_id = new \Psalm\Internal\MethodIdentifier($fq_class_name, '__get');
 
             if (!$naive_property_exists
-                && $class_storage->mixin instanceof Type\Atomic\TNamedObject
+                && $class_storage->namedMixins
             ) {
-                $new_property_id = $class_storage->mixin->value . '::$' . $prop_name;
+                foreach ($class_storage->namedMixins as $mixin) {
+                    $new_property_id = $mixin->value . '::$' . $prop_name;
 
-                try {
-                    $new_class_storage = $codebase->classlike_storage_provider->get($class_storage->mixin->value);
-                } catch (\InvalidArgumentException $e) {
-                    $new_class_storage = null;
-                }
-
-                if ($new_class_storage
-                    && ($codebase->properties->propertyExists(
-                        $new_property_id,
-                        true,
-                        $statements_analyzer,
-                        $context,
-                        $codebase->collect_locations
-                            ? new CodeLocation($statements_analyzer->getSource(), $stmt)
-                            : null
-                    )
-                        || isset($new_class_storage->pseudo_property_get_types['$' . $prop_name]))
-                ) {
-                    $fq_class_name = $class_storage->mixin->value;
-                    $lhs_type_part = clone $class_storage->mixin;
-                    $class_storage = $new_class_storage;
-
-                    if (!isset($new_class_storage->pseudo_property_get_types['$' . $prop_name])) {
-                        $naive_property_exists = true;
+                    try {
+                        $new_class_storage = $codebase->classlike_storage_provider->get($mixin->value);
+                    } catch (\InvalidArgumentException $e) {
+                        $new_class_storage = null;
                     }
 
-                    $property_id = $new_property_id;
+                    if ($new_class_storage
+                        && ($codebase->properties->propertyExists(
+                            $new_property_id,
+                            true,
+                            $statements_analyzer,
+                            $context,
+                            $codebase->collect_locations
+                                    ? new CodeLocation($statements_analyzer->getSource(), $stmt)
+                                    : null
+                        )
+                            || isset($new_class_storage->pseudo_property_get_types['$' . $prop_name]))
+                    ) {
+                        $fq_class_name = $mixin->value;
+                        $lhs_type_part = clone $mixin;
+                        $class_storage = $new_class_storage;
+
+                        if (!isset($new_class_storage->pseudo_property_get_types['$' . $prop_name])) {
+                            $naive_property_exists = true;
+                        }
+
+                        $property_id = $new_property_id;
+                    }
                 }
             }
+
+            $declaring_property_class = $codebase->properties->getDeclaringClassForProperty(
+                $property_id,
+                true,
+                $statements_analyzer
+            );
 
             if ((!$naive_property_exists
                     || ($stmt_var_id !== '$this'
@@ -562,6 +601,29 @@ class InstancePropertyFetchAnalyzer
                 if (isset($class_storage->pseudo_property_get_types['$' . $prop_name])) {
                     $stmt_type = clone $class_storage->pseudo_property_get_types['$' . $prop_name];
 
+                    if ($class_storage->template_types) {
+                        if (!$lhs_type_part instanceof TGenericObject) {
+                            $type_params = [];
+
+                            foreach ($class_storage->template_types as $type_map) {
+                                $type_params[] = clone array_values($type_map)[0][0];
+                            }
+
+                            $lhs_type_part = new TGenericObject($lhs_type_part->value, $type_params);
+                        }
+
+                        $stmt_type = self::localizePropertyType(
+                            $codebase,
+                            $stmt_type,
+                            $lhs_type_part,
+                            $class_storage,
+                            $declaring_property_class
+                                ? $codebase->classlike_storage_provider->get(
+                                    $declaring_property_class
+                                ) : $class_storage
+                        );
+                    }
+
                     $statements_analyzer->node_data->setType($stmt, $stmt_type);
 
                     self::processTaints(
@@ -569,7 +631,8 @@ class InstancePropertyFetchAnalyzer
                         $stmt,
                         $stmt_type,
                         $property_id,
-                        $class_storage
+                        $class_storage,
+                        $in_assignment
                     );
                     continue;
                 }
@@ -673,6 +736,29 @@ class InstancePropertyFetchAnalyzer
                 ) {
                     $stmt_type = clone $class_storage->pseudo_property_get_types['$' . $prop_name];
 
+                    if ($class_storage->template_types) {
+                        if (!$lhs_type_part instanceof TGenericObject) {
+                            $type_params = [];
+
+                            foreach ($class_storage->template_types as $type_map) {
+                                $type_params[] = clone array_values($type_map)[0][0];
+                            }
+
+                            $lhs_type_part = new TGenericObject($lhs_type_part->value, $type_params);
+                        }
+
+                        $stmt_type = self::localizePropertyType(
+                            $codebase,
+                            $stmt_type,
+                            $lhs_type_part,
+                            $class_storage,
+                            $declaring_property_class
+                                ? $codebase->classlike_storage_provider->get(
+                                    $declaring_property_class
+                                ) : $class_storage
+                        );
+                    }
+
                     $statements_analyzer->node_data->setType($stmt, $stmt_type);
 
                     self::processTaints(
@@ -680,13 +766,15 @@ class InstancePropertyFetchAnalyzer
                         $stmt,
                         $stmt_type,
                         $property_id,
-                        $class_storage
+                        $class_storage,
+                        $in_assignment
                     );
                     continue;
                 }
 
                 if ($fq_class_name !== $context->self
                     && $context->self
+                    && $codebase->classlikes->classExtends($fq_class_name, $context->self)
                     && $codebase->properties->propertyExists(
                         $context->self . '::$' . $prop_name,
                         true,
@@ -700,6 +788,24 @@ class InstancePropertyFetchAnalyzer
                     $property_id = $context->self . '::$' . $prop_name;
                 } else {
                     if ($context->inside_isset || $context->collect_initializations) {
+                        if ($context->pure) {
+                            if (IssueBuffer::accepts(
+                                new ImpurePropertyFetch(
+                                    'Cannot access a property on a mutable object from a pure context',
+                                    new CodeLocation($statements_analyzer, $stmt)
+                                ),
+                                $statements_analyzer->getSuppressedIssues()
+                            )) {
+                                // fall through
+                            }
+                        } elseif ($context->inside_isset
+                            && $statements_analyzer->getSource()
+                                instanceof \Psalm\Internal\Analyzer\FunctionLikeAnalyzer
+                            && $statements_analyzer->getSource()->track_mutations
+                        ) {
+                            $statements_analyzer->getSource()->inferred_impure = true;
+                        }
+
                         return true;
                     }
 
@@ -815,34 +921,30 @@ class InstancePropertyFetchAnalyzer
                     }
                 }
 
-                if ($property_storage->psalm_internal && $context->self) {
-                    if (! NamespaceAnalyzer::isWithin($context->self, $property_storage->psalm_internal)) {
-                        if (IssueBuffer::accepts(
-                            new InternalProperty(
-                                $property_id . ' is marked internal to ' . $property_storage->psalm_internal,
-                                new CodeLocation($statements_analyzer->getSource(), $stmt),
-                                $property_id
-                            ),
-                            $statements_analyzer->getSuppressedIssues()
-                        )) {
-                            // fall through
-                        }
+                if ($context->self && !NamespaceAnalyzer::isWithin($context->self, $property_storage->internal)) {
+                    if (IssueBuffer::accepts(
+                        new InternalProperty(
+                            $property_id . ' is internal to ' . $property_storage->internal
+                                . ' but called from ' . $context->self,
+                            new CodeLocation($statements_analyzer->getSource(), $stmt),
+                            $property_id
+                        ),
+                        $statements_analyzer->getSuppressedIssues()
+                    )) {
+                        // fall through
                     }
                 }
 
-                if ($property_storage->internal && $context->self) {
-                    if (! NamespaceAnalyzer::nameSpaceRootsMatch($context->self, $declaring_property_class)) {
-                        if (IssueBuffer::accepts(
-                            new InternalProperty(
-                                $property_id . ' is marked internal',
-                                new CodeLocation($statements_analyzer->getSource(), $stmt),
-                                $property_id
-                            ),
-                            $statements_analyzer->getSuppressedIssues()
-                        )) {
-                            // fall through
-                        }
-                    }
+                if ($context->inside_unset) {
+                    InstancePropertyAssignmentAnalyzer::trackPropertyImpurity(
+                        $statements_analyzer,
+                        $stmt,
+                        $property_id,
+                        $property_storage,
+                        $declaring_class_storage,
+                        null,
+                        $context
+                    );
                 }
             }
 
@@ -863,7 +965,8 @@ class InstancePropertyFetchAnalyzer
                         new MissingPropertyType(
                             'Property ' . $fq_class_name . '::$' . $prop_name
                                 . ' does not have a declared type',
-                            new CodeLocation($statements_analyzer->getSource(), $stmt)
+                            new CodeLocation($statements_analyzer->getSource(), $stmt),
+                            $property_id
                         ),
                         $statements_analyzer->getSuppressedIssues()
                     )) {
@@ -912,12 +1015,35 @@ class InstancePropertyFetchAnalyzer
                 }
             }
 
+            if (!$context->collect_mutations
+                && !$context->collect_initializations
+                && !($class_storage->external_mutation_free
+                    && $class_property_type->allow_mutations)
+            ) {
+                if ($context->pure) {
+                    if (IssueBuffer::accepts(
+                        new ImpurePropertyFetch(
+                            'Cannot access a property on a mutable object from a pure context',
+                            new CodeLocation($statements_analyzer, $stmt)
+                        ),
+                        $statements_analyzer->getSuppressedIssues()
+                    )) {
+                        // fall through
+                    }
+                } elseif ($statements_analyzer->getSource() instanceof \Psalm\Internal\Analyzer\FunctionLikeAnalyzer
+                    && $statements_analyzer->getSource()->track_mutations
+                ) {
+                    $statements_analyzer->getSource()->inferred_impure = true;
+                }
+            }
+
             self::processTaints(
                 $statements_analyzer,
                 $stmt,
                 $class_property_type,
                 $property_id,
-                $class_storage
+                $class_storage,
+                $in_assignment
             );
 
             if ($stmt_type = $statements_analyzer->node_data->getType($stmt)) {
@@ -993,7 +1119,9 @@ class InstancePropertyFetchAnalyzer
         ClassLikeStorage $declaring_class_storage
     ) : Type\Union {
         $template_types = CallAnalyzer::getTemplateTypesForCall(
+            $codebase,
             $declaring_class_storage,
+            $declaring_class_storage->name,
             $calling_class_storage,
             $calling_class_storage->template_types ?: []
         );
@@ -1063,11 +1191,14 @@ class InstancePropertyFetchAnalyzer
         PhpParser\Node\Expr\PropertyFetch $stmt,
         Type\Union $type,
         string $property_id,
-        \Psalm\Storage\ClassLikeStorage $class_storage
+        \Psalm\Storage\ClassLikeStorage $class_storage,
+        bool $in_assignment
     ) : void {
         $codebase = $statements_analyzer->getCodebase();
 
-        if (!$codebase->taint || !$codebase->config->trackTaintsInPath($statements_analyzer->getFilePath())) {
+        if (!$codebase->taint
+            || !$codebase->config->trackTaintsInPath($statements_analyzer->getFilePath())
+        ) {
             return;
         }
 
@@ -1088,6 +1219,13 @@ class InstancePropertyFetchAnalyzer
             );
 
             if ($var_id) {
+                $var_type = $statements_analyzer->node_data->getType($stmt->var);
+
+                if ($var_type && \in_array('TaintedInput', $statements_analyzer->getSuppressedIssues())) {
+                    $var_type->parent_nodes = [];
+                    return;
+                }
+
                 $var_node = TaintNode::getForAssignment(
                     $var_id,
                     $var_location
@@ -1108,8 +1246,6 @@ class InstancePropertyFetchAnalyzer
                     'property-fetch'
                         . ($stmt->name instanceof PhpParser\Node\Identifier ? '-' . $stmt->name : '')
                 );
-
-                $var_type = $statements_analyzer->node_data->getType($stmt->var);
 
                 if ($var_type && $var_type->parent_nodes) {
                     foreach ($var_type->parent_nodes as $parent_node) {
@@ -1144,7 +1280,11 @@ class InstancePropertyFetchAnalyzer
 
             $codebase->taint->addTaintNode($property_node);
 
-            $codebase->taint->addPath($property_node, $localized_property_node, 'property-fetch');
+            if ($in_assignment) {
+                $codebase->taint->addPath($localized_property_node, $property_node, 'property-assignment');
+            } else {
+                $codebase->taint->addPath($property_node, $localized_property_node, 'property-fetch');
+            }
 
             $type->parent_nodes[] = $localized_property_node;
         }

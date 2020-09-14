@@ -9,6 +9,7 @@ use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\Internal\Taint\Source;
 use Psalm\CodeLocation;
 use Psalm\Context;
+use Psalm\Issue\ImpureVariable;
 use Psalm\Issue\InvalidScope;
 use Psalm\Issue\PossiblyUndefinedGlobalVariable;
 use Psalm\Issue\PossiblyUndefinedVariable;
@@ -104,6 +105,22 @@ class VariableFetchAnalyzer
                 );
             }
 
+            if ($context->pure) {
+                if (IssueBuffer::accepts(
+                    new ImpureVariable(
+                        'Cannot reference $this in a pure context',
+                        new CodeLocation($statements_analyzer->getSource(), $stmt)
+                    ),
+                    $statements_analyzer->getSuppressedIssues()
+                )) {
+                    // fall through
+                }
+            } elseif ($statements_analyzer->getSource() instanceof \Psalm\Internal\Analyzer\FunctionLikeAnalyzer
+                && $statements_analyzer->getSource()->track_mutations
+            ) {
+                $statements_analyzer->getSource()->inferred_impure = true;
+            }
+
             return true;
         }
 
@@ -150,6 +167,22 @@ class VariableFetchAnalyzer
         }
 
         if (!is_string($stmt->name)) {
+            if ($context->pure) {
+                if (IssueBuffer::accepts(
+                    new ImpureVariable(
+                        'Cannot reference an unknown variable in a pure context',
+                        new CodeLocation($statements_analyzer->getSource(), $stmt)
+                    ),
+                    $statements_analyzer->getSuppressedIssues()
+                )) {
+                    // fall through
+                }
+            } elseif ($statements_analyzer->getSource() instanceof \Psalm\Internal\Analyzer\FunctionLikeAnalyzer
+                && $statements_analyzer->getSource()->track_mutations
+            ) {
+                $statements_analyzer->getSource()->inferred_impure = true;
+            }
+
             return ExpressionAnalyzer::analyze($statements_analyzer, $stmt->name, $context);
         }
 
@@ -193,7 +226,8 @@ class VariableFetchAnalyzer
                         if (IssueBuffer::accepts(
                             new UndefinedGlobalVariable(
                                 'Cannot find referenced variable ' . $var_name . ' in global scope',
-                                new CodeLocation($statements_analyzer->getSource(), $stmt)
+                                new CodeLocation($statements_analyzer->getSource(), $stmt),
+                                $var_name
                             ),
                             $statements_analyzer->getSuppressedIssues()
                         )) {
@@ -243,7 +277,8 @@ class VariableFetchAnalyzer
                         new PossiblyUndefinedGlobalVariable(
                             'Possibly undefined global variable ' . $var_name . ', first seen on line ' .
                                 $first_appearance->getLineNumber(),
-                            new CodeLocation($statements_analyzer->getSource(), $stmt)
+                            new CodeLocation($statements_analyzer->getSource(), $stmt),
+                            $var_name
                         ),
                         $statements_analyzer->getSuppressedIssues(),
                         (bool) $statements_analyzer->getBranchPoint($var_name)
@@ -301,7 +336,8 @@ class VariableFetchAnalyzer
                     if (IssueBuffer::accepts(
                         new PossiblyUndefinedGlobalVariable(
                             'Possibly undefined global variable ' . $var_name . ' defined in try block',
-                            new CodeLocation($statements_analyzer->getSource(), $stmt)
+                            new CodeLocation($statements_analyzer->getSource(), $stmt),
+                            $var_name
                         ),
                         $statements_analyzer->getSuppressedIssues()
                     )) {
@@ -360,7 +396,10 @@ class VariableFetchAnalyzer
     ) : void {
         $codebase = $statements_analyzer->getCodebase();
 
-        if ($codebase->taint && $codebase->config->trackTaintsInPath($statements_analyzer->getFilePath())) {
+        if ($codebase->taint
+            && $codebase->config->trackTaintsInPath($statements_analyzer->getFilePath())
+            && !\in_array('TaintedInput', $statements_analyzer->getSuppressedIssues())
+        ) {
             if ($var_name === '$_GET'
                 || $var_name === '$_POST'
                 || $var_name === '$_COOKIE'
@@ -385,6 +424,9 @@ class VariableFetchAnalyzer
         }
     }
 
+    /**
+     * @psalm-pure
+     */
     public static function isSuperGlobal(string $var_id) : bool
     {
         return in_array(

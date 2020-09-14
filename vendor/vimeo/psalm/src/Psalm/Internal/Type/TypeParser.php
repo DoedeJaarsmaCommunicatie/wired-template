@@ -342,6 +342,10 @@ class TypeParser
 
             foreach ($parse_tree->children as $child_tree) {
                 if ($child_tree instanceof ParseTree\NullableTree) {
+                    if (!isset($child_tree->children[0])) {
+                        throw new TypeParseTreeException('Invalid ? character');
+                    }
+
                     $atomic_type = self::getTypeFromTree(
                         $child_tree->children[0],
                         $codebase,
@@ -671,12 +675,13 @@ class TypeParser
                 },
                 $parse_tree->children
             );
+            $pure = strpos($parse_tree->value, 'pure-') === 0 ? true : null;
 
             if (in_array(strtolower($parse_tree->value), ['closure', '\closure'], true)) {
-                return new TFn('Closure', $params);
+                return new TFn('Closure', $params, null, $pure);
             }
 
-            return new TCallable($parse_tree->value, $params);
+            return new TCallable('callable', $params, null, $pure);
         }
 
         if ($parse_tree instanceof ParseTree\EncapsulationTree) {

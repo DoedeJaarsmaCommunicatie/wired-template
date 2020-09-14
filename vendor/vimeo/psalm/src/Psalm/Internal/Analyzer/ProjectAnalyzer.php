@@ -21,7 +21,9 @@ use Psalm\Issue\MismatchingDocblockParamType;
 use Psalm\Issue\MismatchingDocblockReturnType;
 use Psalm\Issue\MissingClosureReturnType;
 use Psalm\Issue\MissingParamType;
+use Psalm\Issue\MissingPropertyType;
 use Psalm\Issue\MissingReturnType;
+use Psalm\Issue\ParamNameMismatch;
 use Psalm\Issue\PossiblyUndefinedGlobalVariable;
 use Psalm\Issue\PossiblyUndefinedVariable;
 use Psalm\Issue\PossiblyUnusedMethod;
@@ -84,6 +86,8 @@ use function substr_count;
 use function array_map;
 use function end;
 use Psalm\Internal\Codebase\Taint;
+use function ini_get;
+use function in_array;
 
 /**
  * @internal
@@ -133,6 +137,11 @@ class ProjectAnalyzer
      * @var bool
      */
     public $debug_lines = false;
+
+    /**
+     * @var bool
+     */
+    public $debug_performance = false;
 
     /**
      * @var bool
@@ -209,7 +218,9 @@ class ProjectAnalyzer
         MismatchingDocblockReturnType::class,
         MissingClosureReturnType::class,
         MissingParamType::class,
+        MissingPropertyType::class,
         MissingReturnType::class,
+        ParamNameMismatch::class,
         PossiblyUndefinedGlobalVariable::class,
         PossiblyUndefinedVariable::class,
         PossiblyUnusedMethod::class,
@@ -351,6 +362,7 @@ class ProjectAnalyzer
             '.txt' => Report::TYPE_TEXT,
             '.emacs' => Report::TYPE_EMACS,
             '.pylint' => Report::TYPE_PYLINT,
+            '.console' => Report::TYPE_CONSOLE,
         ];
 
         foreach ($report_file_paths as $report_file_path) {
@@ -361,6 +373,7 @@ class ProjectAnalyzer
                     $o->format = $type;
                     $o->show_info = $show_info;
                     $o->output_path = $report_file_path;
+                    $o->use_color = false;
                     $report_options[] = $o;
                     continue 2;
                 }
@@ -443,13 +456,27 @@ class ProjectAnalyzer
                 exit(1);
             }
             fwrite(STDOUT, "Server listening on $address\n");
+
+            $fork_available = true;
             if (!extension_loaded('pcntl')) {
                 fwrite(STDERR, "PCNTL is not available. Only a single connection will be accepted\n");
+                $fork_available = false;
             }
+
+            $disabled_functions = array_map('trim', explode(',', ini_get('disable_functions')));
+            if (in_array('pcntl_fork', $disabled_functions)) {
+                fwrite(
+                    STDERR,
+                    "pcntl_fork() is disabled by php configuration (disable_functions directive)."
+                    . " Only a single connection will be accepted\n"
+                );
+                $fork_available = false;
+            }
+
             while ($socket = stream_socket_accept($tcpServer, -1)) {
                 fwrite(STDOUT, "Connection accepted\n");
                 stream_set_blocking($socket, false);
-                if (extension_loaded('pcntl')) {
+                if ($fork_available) {
                     // If PCNTL is available, fork a child process for the connection
                     // An exit notification will only terminate the child process
                     $pid = pcntl_fork();
@@ -1308,8 +1335,19 @@ class ProjectAnalyzer
 
         list($php_major_version, $php_minor_version) = explode('.', $version);
 
-        $this->codebase->php_major_version = (int) $php_major_version;
-        $this->codebase->php_minor_version = (int) $php_minor_version;
+        $php_major_version = (int) $php_major_version;
+        $php_minor_version = (int) $php_minor_version;
+
+        if ($this->codebase->php_major_version !== $php_major_version
+            || $this->codebase->php_minor_version !== $php_minor_version
+        ) {
+            // reset lexer and parser when php version changes
+            \Psalm\Internal\Provider\StatementsProvider::clearLexer();
+            \Psalm\Internal\Provider\StatementsProvider::clearParser();
+        }
+
+        $this->codebase->php_major_version = $php_major_version;
+        $this->codebase->php_minor_version = $php_minor_version;
     }
 
     /**
@@ -1321,6 +1359,9 @@ class ProjectAnalyzer
     public function setIssuesToFix(array $issues)
     {
         $supported_issues_to_fix = static::getSupportedIssuesToFix();
+
+        $supported_issues_to_fix[] = 'MissingImmutableAnnotation';
+        $supported_issues_to_fix[] = 'MissingPureAnnotation';
 
         $unsupportedIssues = array_diff(array_keys($issues), $supported_issues_to_fix);
 
@@ -1523,6 +1564,8 @@ class ProjectAnalyzer
 
     /**
      * @return array<string>
+     *
+     * @psalm-pure
      */
     public static function getSupportedIssuesToFix(): array
     {

@@ -10,7 +10,8 @@ use Psalm\CodeLocation;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\Fetch\VariableFetchAnalyzer;
 use Psalm\Internal\Analyzer\TraitAnalyzer;
-use Psalm\Internal\Analyzer\TypeAnalyzer;
+use Psalm\Internal\Type\Comparator\AtomicTypeComparator;
+use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Issue\DocblockTypeContradiction;
 use Psalm\Issue\TypeDoesNotContainNull;
 use Psalm\Issue\TypeDoesNotContainType;
@@ -81,6 +82,11 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
             $is_equality = true;
         }
 
+        if ($assertion[0] === '>') {
+            $assertion = 'falsy';
+            $is_negation = true;
+        }
+
         if ($existing_var_type === null
             && is_string($key)
             && VariableFetchAnalyzer::isSuperGlobal($key)
@@ -98,6 +104,7 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
             if ($assertion === 'array-key-exists'
                 || $assertion === 'non-empty-countable'
                 || strpos($assertion, 'has-at-least-') === 0
+                || strpos($assertion, 'has-exactly-') === 0
             ) {
                 return Type::getMixed();
             }
@@ -216,11 +223,19 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
                         }
                     }
 
-                    $new_type = Type::getClassString($assertion);
+                    if (isset($template_type_map[$assertion])) {
+                        $new_type = Type::parseString(
+                            'class-string<' . $assertion . '>',
+                            null,
+                            $template_type_map
+                        );
+                    } else {
+                        $new_type = Type::getClassString($assertion);
+                    }
 
                     if ((
                         $new_type_has_interface_string
-                            && !TypeAnalyzer::isContainedBy(
+                            && !UnionTypeComparator::isContainedBy(
                                 $codebase,
                                 $existing_var_type,
                                 $new_type
@@ -228,7 +243,7 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
                     )
                         || (
                             $old_type_has_interface_string
-                            && !TypeAnalyzer::isContainedBy(
+                            && !UnionTypeComparator::isContainedBy(
                                 $codebase,
                                 $new_type,
                                 $existing_var_type
@@ -256,7 +271,7 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
 
                             $existing_var_type_part = $existing_var_type_part->as_type;
 
-                            if (TypeAnalyzer::isAtomicContainedBy(
+                            if (AtomicTypeComparator::isContainedBy(
                                 $codebase,
                                 $existing_var_type_part,
                                 $new_type_part
@@ -418,7 +433,7 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
                     $new_type_part->addIntersectionType($existing_var_type_part);
                     $acceptable_atomic_types[] = clone $existing_var_type_part;
                 } else {
-                    if (TypeAnalyzer::isAtomicContainedBy(
+                    if (AtomicTypeComparator::isContainedBy(
                         $codebase,
                         $existing_var_type_part,
                         $new_as_atomic
@@ -463,7 +478,7 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
         if ($new_type_part instanceof TNamedObject
             && ((
                 $new_type_has_interface
-                    && !TypeAnalyzer::isContainedBy(
+                    && !UnionTypeComparator::isContainedBy(
                         $codebase,
                         $existing_var_type,
                         $new_type
@@ -471,7 +486,7 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
             )
                 || (
                     $old_type_has_interface
-                    && !TypeAnalyzer::isContainedBy(
+                    && !UnionTypeComparator::isContainedBy(
                         $codebase,
                         $new_type,
                         $existing_var_type
@@ -481,7 +496,7 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
             $acceptable_atomic_types = [];
 
             foreach ($existing_var_type->getAtomicTypes() as $existing_var_type_part) {
-                if (TypeAnalyzer::isAtomicContainedBy(
+                if (AtomicTypeComparator::isContainedBy(
                     $codebase,
                     $existing_var_type_part,
                     $new_type_part
@@ -541,7 +556,7 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
                 && (!($statements_analyzer->getSource()->getSource() instanceof TraitAnalyzer)
                     || ($key !== '$this'
                         && !($existing_var_type->hasLiteralClassString() && $new_type->hasLiteralClassString())))
-                && TypeAnalyzer::isContainedBy(
+                && UnionTypeComparator::isContainedBy(
                     $codebase,
                     $existing_var_type,
                     $new_type
@@ -641,8 +656,8 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
         Type\Union $existing_type,
         Type\Union $new_type,
         array $template_type_map,
-        bool &$has_match,
-        bool &$any_scalar_type_match_found
+        bool &$has_match = false,
+        bool &$any_scalar_type_match_found = false
     ) : Type\Union {
         $matching_atomic_types = [];
 
@@ -661,13 +676,13 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
                     continue;
                 }
 
-                $atomic_comparison_results = new \Psalm\Internal\Analyzer\TypeComparisonResult();
+                $atomic_comparison_results = new \Psalm\Internal\Type\Comparator\TypeComparisonResult();
 
                 if ($existing_type_part instanceof TNamedObject) {
                     $existing_type_part->was_static = false;
                 }
 
-                $atomic_contained_by = TypeAnalyzer::isAtomicContainedBy(
+                $atomic_contained_by = AtomicTypeComparator::isContainedBy(
                     $codebase,
                     $new_type_part,
                     $existing_type_part,
@@ -689,7 +704,7 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
                             $existing_type_part->type_params
                         );
                     }
-                } elseif (TypeAnalyzer::isAtomicContainedBy(
+                } elseif (AtomicTypeComparator::isContainedBy(
                     $codebase,
                     $existing_type_part,
                     $new_type_part,
@@ -746,6 +761,25 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
                 ) {
                     $new_type_part->extra_types[$existing_type_part->getKey()] = $existing_type_part;
                     $matching_atomic_types[] = $new_type_part;
+                    $has_local_match = true;
+
+                    continue;
+                }
+
+                if ($has_local_match
+                    && $new_type_part instanceof Type\Atomic\TNamedObject
+                    && $existing_type_part instanceof Type\Atomic\TTemplateParam
+                    && $existing_type_part->as->hasObjectType()
+                ) {
+                    $existing_type_part = clone $existing_type_part;
+                    $existing_type_part->as = self::filterTypeWithAnother(
+                        $codebase,
+                        $existing_type_part->as,
+                        new Type\Union([$new_type_part]),
+                        $template_type_map
+                    );
+
+                    $matching_atomic_types[] = $existing_type_part;
                     $has_local_match = true;
 
                     continue;
@@ -959,8 +993,10 @@ class AssertionReconciler extends \Psalm\Type\Reconciler
                     $can_be_equal = false;
                     $did_remove_type = false;
 
-                    foreach ($existing_var_atomic_types as $atomic_key => $_) {
-                        if ($atomic_key !== $assertion) {
+                    foreach ($existing_var_atomic_types as $atomic_key => $atomic_type) {
+                        if ($atomic_key !== $assertion
+                            && !($atomic_type instanceof Type\Atomic\TPositiveInt && $value > 0)
+                        ) {
                             $existing_var_type->removeType($atomic_key);
                             $did_remove_type = true;
                         } else {

@@ -42,6 +42,11 @@ class FunctionDocblockComment
     public $params_out = [];
 
     /**
+     * @var array{type:string, line_number: int}|null
+     */
+    public $self_out;
+
+    /**
      * @var array<int, array{name:string, type:string, line_number: int}>
      */
     public $globals = [];
@@ -183,4 +188,9 @@ class FunctionDocblockComment
      * @var bool
      */
     public $external_mutation_free = false;
+
+    /**
+     * @var bool
+     */
+    public $no_named_args = false;
 }

@@ -10,12 +10,12 @@ use Psalm\Internal\Provider\FileStorageProvider;
 use Psalm\Internal\Provider\FunctionExistenceProvider;
 use Psalm\Internal\Provider\FunctionParamsProvider;
 use Psalm\Internal\Provider\FunctionReturnTypeProvider;
+use Psalm\Internal\Type\Comparator\CallableTypeComparator;
 use Psalm\StatementsSource;
 use Psalm\Storage\FunctionStorage;
 use function strpos;
 use function strtolower;
 use function substr;
-use Closure;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Internal\MethodIdentifier;
 
@@ -206,7 +206,7 @@ class Functions
         $predefined_functions = $statements_analyzer->getCodebase()->config->getPredefinedFunctions();
 
         if (isset($predefined_functions[$function_id])) {
-            /** @psalm-suppress TypeCoercion */
+            /** @psalm-suppress ArgumentTypeCoercion */
             if ($this->reflection->registerFunction($function_id) === false) {
                 return false;
             }
@@ -299,11 +299,12 @@ class Functions
     ) : bool {
         $impure_functions = [
             // file io
-            'chdir', 'chgrp', 'chmod', 'chown', 'chroot', 'closedir', 'copy', 'file_put_contents',
+            'chdir', 'chgrp', 'chmod', 'chown', 'chroot', 'copy', 'file_put_contents',
+            'opendir', 'readdir', 'closedir', 'rewinddir', 'scandir',
             'fopen', 'fread', 'fwrite', 'fclose', 'touch', 'fpassthru', 'fputs', 'fscanf', 'fseek',
             'ftruncate', 'fprintf', 'symlink', 'mkdir', 'unlink', 'rename', 'rmdir', 'popen', 'pclose',
             'fgetcsv', 'fputcsv', 'umask', 'finfo_close', 'readline_add_history', 'stream_set_timeout',
-            'fflush', 'move_uploaded_file',
+            'fgets', 'fflush', 'move_uploaded_file', 'file_exists', 'realpath', 'glob',
 
             // stream/socket io
             'stream_context_set_option', 'socket_write', 'stream_set_blocking', 'socket_close',
@@ -354,6 +355,7 @@ class Functions
             'mt_rand', 'rand', 'random_int', 'random_bytes',
             'wincache_ucache_delete', 'wincache_ucache_set', 'wincache_ucache_inc',
             'class_alias',
+            'class_exists', // impure by virtue of triggering autoloader
 
             // php environment
             'ini_set', 'sleep', 'usleep', 'register_shutdown_function',
@@ -387,6 +389,9 @@ class Functions
 
             // ftp
             'ftp_close',
+
+            // bcmath
+            'bcscale',
         ];
 
         if (\in_array(strtolower($function_id), $impure_functions, true)) {
@@ -446,15 +451,19 @@ class Functions
             || (isset($args[0]) && !$args[0]->value instanceof \PhpParser\Node\Expr\Closure);
 
         foreach ($function_callable->params as $i => $param) {
-            if ($param->type && $param->type->hasCallableType() && isset($args[$i])) {
-                foreach ($param->type->getAtomicTypes() as $possible_callable) {
-                    $possible_callable = \Psalm\Internal\Analyzer\TypeAnalyzer::getCallableFromAtomic(
-                        $codebase,
-                        $possible_callable
-                    );
+            if ($type_provider && $param->type && $param->type->hasCallableType() && isset($args[$i])) {
+                $arg_type = $type_provider->getType($args[$i]->value);
 
-                    if ($possible_callable && !$possible_callable->is_pure) {
-                        return false;
+                if ($arg_type) {
+                    foreach ($arg_type->getAtomicTypes() as $possible_callable) {
+                        $possible_callable = CallableTypeComparator::getCallableFromAtomic(
+                            $codebase,
+                            $possible_callable
+                        );
+
+                        if ($possible_callable && !$possible_callable->is_pure) {
+                            return false;
+                        }
                     }
                 }
             }

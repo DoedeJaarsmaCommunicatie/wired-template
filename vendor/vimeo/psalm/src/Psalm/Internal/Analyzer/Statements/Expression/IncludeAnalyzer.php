@@ -105,6 +105,7 @@ class IncludeAnalyzer
             && $codebase->taint
             && $stmt_expr_type->parent_nodes
             && $codebase->config->trackTaintsInPath($statements_analyzer->getFilePath())
+            && !\in_array('TaintedInput', $statements_analyzer->getSuppressedIssues())
         ) {
             $arg_location = new CodeLocation($statements_analyzer->getSource(), $stmt->expr);
 
@@ -386,6 +387,9 @@ class IncludeAnalyzer
         return null;
     }
 
+    /**
+     * @psalm-pure
+     */
     public static function normalizeFilePath(string $path_to_file) : string
     {
         // replace all \ with / for normalization

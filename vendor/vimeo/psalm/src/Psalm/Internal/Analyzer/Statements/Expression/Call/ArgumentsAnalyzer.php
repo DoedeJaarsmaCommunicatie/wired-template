@@ -7,9 +7,10 @@ use Psalm\Internal\Analyzer\Statements\ExpressionAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\AssignmentAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\CallAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\ExpressionIdentifier;
+use Psalm\Internal\Analyzer\Statements\Expression\Fetch\ArrayFetchAnalyzer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
-use Psalm\Internal\Analyzer\TypeAnalyzer;
 use Psalm\Internal\Codebase\InternalCallMapHandler;
+use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\UnionTemplateHandler;
@@ -240,22 +241,45 @@ class ArgumentsAnalyzer
                                 && !$replaced_type_part->params[$closure_param_offset]->type->hasTemplate()
                             ) {
                                 if ($param_storage->type) {
-                                    if ($param_storage->type !== $param_storage->signature_type) {
-                                        continue;
+                                    if ($method_id === 'array_map' || $method_id === 'array_filter') {
+                                        ArrayFetchAnalyzer::taintArrayFetch(
+                                            $statements_analyzer,
+                                            $args[1 - $argument_offset]->value,
+                                            null,
+                                            $param_storage->type,
+                                            Type::getMixed()
+                                        );
                                     }
 
-                                    $type_match_found = TypeAnalyzer::isContainedBy(
-                                        $codebase,
-                                        $replaced_type_part->params[$closure_param_offset]->type,
-                                        $param_storage->type
-                                    );
+                                    if (!$param_storage->type_inferred) {
+                                        if ($param_storage->type !== $param_storage->signature_type) {
+                                            continue;
+                                        }
 
-                                    if (!$type_match_found) {
-                                        continue;
+                                        $type_match_found = UnionTypeComparator::isContainedBy(
+                                            $codebase,
+                                            $replaced_type_part->params[$closure_param_offset]->type,
+                                            $param_storage->type
+                                        );
+
+                                        if (!$type_match_found) {
+                                            continue;
+                                        }
                                     }
                                 }
 
                                 $param_storage->type = $replaced_type_part->params[$closure_param_offset]->type;
+                                $param_storage->type_inferred = true;
+
+                                if ($method_id === 'array_map' || $method_id === 'array_filter') {
+                                    ArrayFetchAnalyzer::taintArrayFetch(
+                                        $statements_analyzer,
+                                        $args[1 - $argument_offset]->value,
+                                        null,
+                                        $param_storage->type,
+                                        Type::getMixed()
+                                    );
+                                }
                             }
                         }
                     }
@@ -297,12 +321,14 @@ class ArgumentsAnalyzer
                     []
                 );
 
+                $existing_type = $statements_analyzer->node_data->getType($arg->value);
+
                 \Psalm\Internal\Type\UnionTemplateHandler::replaceTemplateTypesWithStandins(
                     $generic_param_type,
                     $replace_template_result,
                     $codebase,
                     $statements_analyzer,
-                    $statements_analyzer->node_data->getType($arg->value),
+                    $existing_type,
                     $argument_offset,
                     'fn-' . ($context->calling_method_id ?: $context->calling_function_id)
                 );
@@ -439,7 +465,9 @@ class ArgumentsAnalyzer
 
         if ($function_storage) {
             $template_types = CallAnalyzer::getTemplateTypesForCall(
+                $codebase,
                 $class_storage,
+                $self_fq_class_name,
                 $calling_class_storage,
                 $function_storage->template_types ?: []
             );
@@ -513,7 +541,6 @@ class ArgumentsAnalyzer
                     $cased_method_id,
                     $last_param,
                     $function_params,
-                    $function_storage,
                     $argument_offset,
                     $arg,
                     $context,
@@ -692,7 +719,6 @@ class ArgumentsAnalyzer
      * @param  string|null $cased_method_id
      * @param  FunctionLikeParameter|null $last_param
      * @param  array<int, FunctionLikeParameter> $function_params
-     * @param  FunctionLikeStorage|null $function_storage
      * @return false|null
      */
     private static function handlePossiblyMatchingByRefParam(
@@ -702,7 +728,6 @@ class ArgumentsAnalyzer
         $cased_method_id,
         $last_param,
         $function_params,
-        $function_storage,
         int $argument_offset,
         PhpParser\Node\Arg $arg,
         Context $context,
@@ -761,14 +786,7 @@ class ArgumentsAnalyzer
                 }
 
                 $by_ref_type = $function_param->type;
-
-                if (isset($function_storage->param_out_types[$argument_offset])) {
-                    $by_ref_out_type = $function_storage->param_out_types[$argument_offset];
-                } elseif ($argument_offset >= count($function_params)
-                    && isset($function_storage->param_out_types[count($function_params) - 1])
-                ) {
-                    $by_ref_out_type = $function_storage->param_out_types[count($function_params) - 1];
-                }
+                $by_ref_out_type = $function_param->out_type;
 
                 if ($by_ref_type && $by_ref_type->isNullable()) {
                     $check_null_ref = false;
@@ -1011,7 +1029,12 @@ class ArgumentsAnalyzer
             )
         ) {
             if (in_array($method_id, ['array_pop', 'array_shift'], true)) {
-                ArrayFunctionArgumentsAnalyzer::handleByRefArrayAdjustment($statements_analyzer, $arg, $context);
+                ArrayFunctionArgumentsAnalyzer::handleByRefArrayAdjustment(
+                    $statements_analyzer,
+                    $arg,
+                    $context,
+                    $method_id === 'array_shift'
+                );
 
                 return;
             }

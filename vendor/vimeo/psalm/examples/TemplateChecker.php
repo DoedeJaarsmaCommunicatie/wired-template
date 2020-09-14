@@ -11,13 +11,14 @@ use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\CodeLocation;
 use Psalm\Context;
 use Psalm\DocComment;
+use Psalm\Storage\MethodStorage;
 use Psalm\Type;
 
 class TemplateAnalyzer extends Psalm\Internal\Analyzer\FileAnalyzer
 {
     const VIEW_CLASS = 'Your\\View\\Class';
 
-    public function analyze(Context $context = null, $update_docblocks = false, Context $global_context = null)
+    public function analyze(Context $file_context = null, $preserve_analyzers = false, Context $global_context = null)
     {
         $codebase = $this->project_analyzer->getCodebase();
         $stmts = $codebase->getStatementsForFile($this->file_path);
@@ -156,7 +157,7 @@ class TemplateAnalyzer extends Psalm\Internal\Analyzer\FileAnalyzer
 
         $class_analyzer = new ClassAnalyzer($class, $this, self::VIEW_CLASS);
 
-        $view_method_analyzer = new MethodAnalyzer($class_method, $class_analyzer);
+        $view_method_analyzer = new MethodAnalyzer($class_method, $class_analyzer, new MethodStorage());
 
         if (!$context->check_variables) {
             $view_method_analyzer->addSuppressedIssue('UndefinedVariable');

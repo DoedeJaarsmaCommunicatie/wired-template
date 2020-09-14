@@ -9,7 +9,8 @@ use Psalm\Internal\Analyzer\Statements\Expression\AssertionFinder;
 use Psalm\Internal\Analyzer\Statements\Expression\ExpressionIdentifier;
 use Psalm\Internal\Analyzer\Statements\Expression\Fetch\ConstFetchAnalyzer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
-use Psalm\Internal\Analyzer\TypeAnalyzer;
+use Psalm\Internal\Type\Comparator\CallableTypeComparator;
+use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Codebase\InternalCallMapHandler;
 use Psalm\CodeLocation;
 use Psalm\Context;
@@ -359,9 +360,7 @@ class FunctionCallAnalyzer extends CallAnalyzer
                     $context
                 );
 
-                if ($stmt_type) {
-                    $statements_analyzer->node_data->setType($real_stmt, $stmt_type);
-                }
+                $statements_analyzer->node_data->setType($real_stmt, $stmt_type);
 
                 if ($config->after_every_function_checks) {
                     foreach ($config->after_every_function_checks as $plugin_fq_class_name) {
@@ -568,6 +567,18 @@ class FunctionCallAnalyzer extends CallAnalyzer
 
             foreach ($stmt_name_type->getAtomicTypes() as $var_type_part) {
                 if ($var_type_part instanceof Type\Atomic\TFn || $var_type_part instanceof Type\Atomic\TCallable) {
+                    if (!$var_type_part->is_pure && $context->pure) {
+                        if (IssueBuffer::accepts(
+                            new ImpureFunctionCall(
+                                'Cannot call an impure function from a mutation-free context',
+                                new CodeLocation($statements_analyzer->getSource(), $stmt)
+                            ),
+                            $statements_analyzer->getSuppressedIssues()
+                        )) {
+                            // fall through
+                        }
+                    }
+
                     $function_params = $var_type_part->params;
 
                     if (($stmt_type = $statements_analyzer->node_data->getType($real_stmt))
@@ -624,7 +635,7 @@ class FunctionCallAnalyzer extends CallAnalyzer
                     $potential_method_id = null;
 
                     if ($var_type_part instanceof Type\Atomic\ObjectLike) {
-                        $potential_method_id = TypeAnalyzer::getCallableMethodIdFromObjectLike(
+                        $potential_method_id = CallableTypeComparator::getCallableMethodIdFromObjectLike(
                             $var_type_part,
                             $codebase,
                             $context->calling_method_id,
@@ -806,8 +817,11 @@ class FunctionCallAnalyzer extends CallAnalyzer
         PhpParser\Node\Arg $first_arg,
         Context $context
     ) : void {
+        $first_arg_value_id = \spl_object_id($first_arg->value);
+
         $assert_clauses = \Psalm\Type\Algebra::getFormula(
-            \spl_object_id($first_arg->value),
+            $first_arg_value_id,
+            $first_arg_value_id,
             $first_arg->value,
             $context->self,
             $statements_analyzer,
@@ -897,7 +911,7 @@ class FunctionCallAnalyzer extends CallAnalyzer
         ?FunctionLikeStorage $function_storage,
         TemplateResult $template_result,
         Context $context
-    ) : ?Type\Union {
+    ) : Type\Union {
         $stmt_type = null;
         $config = $codebase->config;
 
@@ -1026,7 +1040,11 @@ class FunctionCallAnalyzer extends CallAnalyzer
             }
         }
 
-        if ($function_storage && $stmt_type) {
+        if (!$stmt_type) {
+            $stmt_type = Type::getMixed();
+        }
+
+        if ($function_storage) {
             self::taintReturnType($statements_analyzer, $stmt, $function_id, $function_storage, $stmt_type);
         }
 
@@ -1045,6 +1063,7 @@ class FunctionCallAnalyzer extends CallAnalyzer
 
         if (!$codebase->taint
             || !$codebase->config->trackTaintsInPath($statements_analyzer->getFilePath())
+            || \in_array('TaintedInput', $statements_analyzer->getSuppressedIssues())
         ) {
             return;
         }
@@ -1135,6 +1154,9 @@ class FunctionCallAnalyzer extends CallAnalyzer
         }
     }
 
+    /**
+     * @psalm-pure
+     */
     private static function simpleExclusion(string $pattern, string $escape_char) : bool
     {
         $str_length = \strlen($pattern);
@@ -1173,6 +1195,7 @@ class FunctionCallAnalyzer extends CallAnalyzer
                     || $current === '|'
                     || $current === ':'
                     || $current === '#'
+                    || $current === '.'
                     || $current === ' '
                 ) {
                     continue;
@@ -1221,7 +1244,9 @@ class FunctionCallAnalyzer extends CallAnalyzer
             && ($context->mutation_free
                 || $context->external_mutation_free
                 || $codebase->find_unused_variables
-                || !$config->remember_property_assignments_after_call)
+                || !$config->remember_property_assignments_after_call
+                || ($statements_analyzer->getSource() instanceof \Psalm\Internal\Analyzer\FunctionLikeAnalyzer
+                    && $statements_analyzer->getSource()->track_mutations))
         ) {
             $must_use = true;
 
@@ -1250,6 +1275,11 @@ class FunctionCallAnalyzer extends CallAnalyzer
                     )) {
                         // fall through
                     }
+                } elseif ($statements_analyzer->getSource() instanceof \Psalm\Internal\Analyzer\FunctionLikeAnalyzer
+                    && $statements_analyzer->getSource()->track_mutations
+                ) {
+                    $statements_analyzer->getSource()->inferred_has_mutation = true;
+                    $statements_analyzer->getSource()->inferred_impure = true;
                 }
 
                 if (!$config->remember_property_assignments_after_call) {
@@ -1342,6 +1372,8 @@ class FunctionCallAnalyzer extends CallAnalyzer
                                     $class_type->defining_class
                                 );
                             }
+                        } else {
+                            $class_string_types[] = new Type\Atomic\TClassString();
                         }
                     }
 
@@ -1551,7 +1583,7 @@ class FunctionCallAnalyzer extends CallAnalyzer
             $first_arg_type = $statements_analyzer->node_data->getType($first_arg->value);
 
             if ($first_arg_type
-                && TypeAnalyzer::isContainedBy(
+                && UnionTypeComparator::isContainedBy(
                     $codebase,
                     $first_arg_type,
                     new Type\Union([new Type\Atomic\TLowercaseString()])

@@ -563,6 +563,10 @@ class ParseTreeCreator
             } else {
                 $new_parent = !$this->current_leaf instanceof ParseTree\Root ? $this->current_leaf : null;
 
+                if (!$next_token) {
+                    throw new TypeParseTreeException('Unexpected token ?');
+                }
+
                 $new_leaf = new ParseTree\NullableTree(
                     $new_parent
                 );
@@ -741,7 +745,11 @@ class ParseTreeCreator
                 break;
 
             case '(':
-                if (in_array(strtolower($type_token[0]), ['closure', 'callable', '\closure'], true)) {
+                if (in_array(
+                    $type_token[0],
+                    ['callable', 'pure-callable', 'Closure', '\Closure', 'pure-Closure'],
+                    true
+                )) {
                     $new_leaf = new ParseTree\CallableTree(
                         $type_token[0],
                         $new_parent
@@ -756,7 +764,7 @@ class ParseTreeCreator
                     );
                 } else {
                     throw new TypeParseTreeException(
-                        'Bracket must be preceded by “Closure”, “callable” or a valid @method name'
+                        'Bracket must be preceded by “Closure”, “callable”, "pure-callable" or a valid @method name'
                     );
                 }
 

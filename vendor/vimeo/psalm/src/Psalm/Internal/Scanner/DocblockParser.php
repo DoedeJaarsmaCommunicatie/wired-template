@@ -2,18 +2,19 @@
 
 namespace Psalm\Internal\Scanner;
 
-use function trim;
-use function preg_replace;
-use function explode;
-use function preg_match;
-use function strlen;
-use function str_replace;
 use const PREG_OFFSET_CAPTURE;
-use function strpos;
-use function rtrim;
-use function array_filter;
+use function explode;
+use function implode;
 use function min;
-use function str_repeat;
+use function preg_match;
+use function preg_replace;
+use function rtrim;
+use function str_replace;
+use function strlen;
+use function strpos;
+use function strspn;
+use function substr;
+use function trim;
 
 class DocblockParser
 {
@@ -29,6 +30,8 @@ class DocblockParser
         $lines = explode("\n", $docblock);
 
         $special = [];
+
+        $first_line_padding = null;
 
         $last = false;
         foreach ($lines as $k => $line) {
@@ -46,24 +49,29 @@ class DocblockParser
 
         $line_offset = 0;
 
-        foreach ($lines as $line) {
+        foreach ($lines as $k => $line) {
             $original_line_length = strlen($line);
 
             $line = str_replace("\r", '', $line);
 
+            if ($first_line_padding === null) {
+                $asterisk_pos = strpos($line, '*');
+
+                if ($asterisk_pos) {
+                    $first_line_padding = substr($line, 0, $asterisk_pos - 1);
+                }
+            }
+
             if (preg_match('/^[ \t]*\*?\s*@([\w\-:]+)[\t ]*(.*)$/sm', $line, $matches, PREG_OFFSET_CAPTURE)) {
                 /** @var array<int, array{string, int}> $matches */
-                list($full_match_info, $type_info, $data_info) = $matches;
+                list($_, $type_info, $data_info) = $matches;
 
-                list($full_match) = $full_match_info;
                 list($type) = $type_info;
                 list($data, $data_offset) = $data_info;
 
                 if (strpos($data, '*')) {
                     $data = rtrim(preg_replace('/^[ \t]*\*\s*$/m', '', $data));
                 }
-
-                $docblock = str_replace($full_match, '', $docblock);
 
                 if (empty($special[$type])) {
                     $special[$type] = [];
@@ -72,35 +80,44 @@ class DocblockParser
                 $data_offset += $line_offset;
 
                 $special[$type][$data_offset + 3] = $data;
+
+                unset($lines[$k]);
+            } else {
+                // Strip the leading *, if present.
+                $lines[$k] = str_replace("\t", ' ', $line);
+                $lines[$k] = preg_replace('/^ *\*/', '', $line);
             }
 
             $line_offset += $original_line_length + 1;
         }
 
-        $docblock = str_replace("\t", '  ', $docblock);
-
         // Smush the whole docblock to the left edge.
         $min_indent = 80;
-        $indent = 0;
-        foreach (array_filter(explode("\n", $docblock)) as $line) {
-            for ($ii = 0; $ii < strlen($line); ++$ii) {
-                if ($line[$ii] != ' ') {
-                    break;
-                }
-                ++$indent;
+        foreach ($lines as $k => $line) {
+            $indent = strspn($line, ' ');
+            if ($indent == strlen($line)) {
+                // This line consists of only spaces. Trim it completely.
+                $lines[$k] = '';
+                continue;
             }
-
             $min_indent = min($indent, $min_indent);
         }
-
-        $docblock = preg_replace('/^' . str_repeat(' ', $min_indent) . '/m', '', $docblock);
+        if ($min_indent > 0) {
+            foreach ($lines as $k => $line) {
+                if (strlen($line) < $min_indent) {
+                    continue;
+                }
+                $lines[$k] = substr($line, $min_indent);
+            }
+        }
+        $docblock = implode("\n", $lines);
         $docblock = rtrim($docblock);
 
         // Trim any empty lines off the front, but leave the indent level if there
         // is one.
         $docblock = preg_replace('/^\s*\n/', '', $docblock);
 
-        $parsed = new ParsedDocblock($docblock, $special);
+        $parsed = new ParsedDocblock($docblock, $special, $first_line_padding ?: '');
 
         self::resolveTags($parsed);
 

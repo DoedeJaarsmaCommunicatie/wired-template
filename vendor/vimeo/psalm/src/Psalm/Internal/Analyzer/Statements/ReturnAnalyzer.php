@@ -10,7 +10,7 @@ use Psalm\Internal\Analyzer\FunctionLikeAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\ClassTemplateParamCollector;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\Internal\Analyzer\TraitAnalyzer;
-use Psalm\Internal\Analyzer\TypeAnalyzer;
+use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\CodeLocation;
 use Psalm\Context;
 use Psalm\Exception\DocblockParseException;
@@ -255,7 +255,7 @@ class ReturnAnalyzer
                         return null;
                     }
 
-                    if ($stmt_type->isMixed()) {
+                    if ($stmt_type->hasMixed()) {
                         if ($local_return_type->isVoid() || $local_return_type->isNever()) {
                             if (IssueBuffer::accepts(
                                 new InvalidReturnStatement(
@@ -276,17 +276,29 @@ class ReturnAnalyzer
                             $codebase->analyzer->incrementMixedCount($statements_analyzer->getFilePath());
                         }
 
+                        if ($stmt_type->isMixed()) {
+                            if (IssueBuffer::accepts(
+                                new MixedReturnStatement(
+                                    'Could not infer a return type',
+                                    new CodeLocation($source, $stmt->expr)
+                                ),
+                                $statements_analyzer->getSuppressedIssues()
+                            )) {
+                                // fall through
+                            }
+
+                            return null;
+                        }
+
                         if (IssueBuffer::accepts(
                             new MixedReturnStatement(
-                                'Could not infer a return type',
+                                'Possibly-mixed return value',
                                 new CodeLocation($source, $stmt->expr)
                             ),
                             $statements_analyzer->getSuppressedIssues()
                         )) {
-                            return false;
+                            // fall through
                         }
-
-                        return null;
                     }
 
                     if ($local_return_type->isMixed()) {
@@ -315,9 +327,9 @@ class ReturnAnalyzer
                         return null;
                     }
 
-                    $union_comparison_results = new \Psalm\Internal\Analyzer\TypeComparisonResult();
+                    $union_comparison_results = new \Psalm\Internal\Type\Comparator\TypeComparisonResult();
 
-                    if (!TypeAnalyzer::isContainedBy(
+                    if (!UnionTypeComparator::isContainedBy(
                         $codebase,
                         $inferred_type,
                         $local_return_type,
@@ -594,7 +606,7 @@ class ReturnAnalyzer
         if (!$parent_return_type) {
             return $return_type;
         }
-        if (!$return_type || TypeAnalyzer::isContainedBy($codebase, $parent_return_type, $return_type)) {
+        if (!$return_type || UnionTypeComparator::isContainedBy($codebase, $parent_return_type, $return_type)) {
             return $parent_return_type;
         }
         return $return_type;

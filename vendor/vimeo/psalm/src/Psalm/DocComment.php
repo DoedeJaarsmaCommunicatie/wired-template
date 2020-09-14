@@ -35,7 +35,7 @@ class DocComment
         'mutation-free', 'external-mutation-free', 'immutable', 'readonly',
         'allow-private-mutation', 'readonly-allow-private-mutation',
         'yield', 'trace', 'import-type', 'flow', 'taint-specialize', 'taint-escape',
-        'taint-unescape'
+        'taint-unescape', 'self-out', 'consistent-constructor'
     ];
 
     /**
@@ -44,15 +44,18 @@ class DocComment
      * Taken from advanced api docmaker, which was taken from
      * https://github.com/facebook/libphutil/blob/master/src/parser/docblock/PhutilDocblockParser.php
      *
-     * @param  string  $docblock
-     * @param  int     $line_number
-     * @param  bool    $preserve_format
+     * @param string  $docblock
+     * @param int     $line_number
+     * @param bool    $preserve_format
      *
      * @return array Array of the main comment and specials
+     *
      * @psalm-return array{description:string, specials:array<string, array<int, string>>}
      * @psalm-suppress PossiblyUnusedMethod
      *
      * @deprecated use parsePreservingLength instead
+     *
+     * @psalm-pure
      */
     public static function parse($docblock, $line_number = null, $preserve_format = false)
     {

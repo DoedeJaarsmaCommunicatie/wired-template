@@ -51,7 +51,7 @@ class Context
     /**
      * Whether or not we're inside an isset call
      *
-     * Inside isssets Psalm is more lenient about certain things
+     * Inside issets Psalm is more lenient about certain things
      *
      * @var bool
      */
@@ -158,7 +158,7 @@ class Context
     /**
      * A list of hashed clauses that have already been factored in
      *
-     * @var list<string>
+     * @var list<string|int>
      */
     public $reconciled_expression_clauses = [];
 
@@ -525,10 +525,12 @@ class Context
     }
 
     /**
-     * @param  Clause[]             $clauses
-     * @param  array<string, bool>  $changed_var_ids
+     * @param Clause[]             $clauses
+     * @param array<string, bool>  $changed_var_ids
      *
      * @return array{0: list<Clause>, list<Clause>}
+     *
+     * @psalm-pure
      */
     public static function removeReconciledClauses(array $clauses, array $changed_var_ids)
     {
@@ -573,7 +575,7 @@ class Context
         $clauses_to_keep = [];
 
         foreach ($clauses as $clause) {
-            \Psalm\Type\Algebra::calculateNegation($clause);
+            $clause = $clause->calculateNegation();
 
             $quoted_remove_var_id = preg_quote($remove_var_id, '/');
 
@@ -687,16 +689,10 @@ class Context
             $statements_analyzer
         );
 
-        $vars_to_remove = [];
-
         foreach ($this->vars_in_scope as $var_id => $_) {
             if (preg_match('/' . preg_quote($remove_var_id, '/') . '[\]\[\-]/', $var_id)) {
-                $vars_to_remove[] = $var_id;
+                unset($this->vars_in_scope[$var_id]);
             }
-        }
-
-        foreach ($vars_to_remove as $var_id) {
-            unset($this->vars_in_scope[$var_id]);
         }
     }
 

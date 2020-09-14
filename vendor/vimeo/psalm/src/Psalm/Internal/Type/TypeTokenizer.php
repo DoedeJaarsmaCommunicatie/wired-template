@@ -41,11 +41,14 @@ class TypeTokenizer
         'class-string' => true,
         'callable-string' => true,
         'callable-array' => true,
+        'pure-callable' => true,
+        'pure-Closure' => true,
         'trait-string' => true,
         'mysql-escaped-string' => true,
         'html-escaped-string' => true,
         'lowercase-string' => true,
         'non-empty-lowercase-string' => true,
+        'positive-int' => true,
         'boolean' => true,
         'integer' => true,
         'double' => true,
@@ -279,10 +282,12 @@ class TypeTokenizer
     }
 
     /**
-     * @param  string $type_string
-     * @param  array{int,int}|null   $php_version
+     * @param string $type_string
+     * @param array{int,int}|null   $php_version
      *
      * @return string
+     *
+     * @psalm-pure
      */
     public static function fixScalarTerms(
         string $type_string,
@@ -360,8 +365,7 @@ class TypeTokenizer
 
             if ($string_type_token[0][0] === '"'
                 || $string_type_token[0][0] === '\''
-                || $string_type_token[0] === '0'
-                || preg_match('/[1-9]/', $string_type_token[0][0])
+                || preg_match('/[0-9]/', $string_type_token[0][0])
             ) {
                 continue;
             }

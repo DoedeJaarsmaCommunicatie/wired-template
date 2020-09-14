@@ -9,7 +9,6 @@ use Psalm\Exception\IncorrectDocblockException;
 use Psalm\Exception\TypeParseTreeException;
 use Psalm\FileSource;
 use Psalm\Internal\Scanner\ClassLikeDocblockComment;
-use Psalm\Internal\Scanner\DocblockParser;
 use Psalm\Internal\Scanner\FunctionDocblockComment;
 use Psalm\Internal\Scanner\VarDocblockComment;
 use Psalm\Internal\Scanner\ParsedDocblock;
@@ -19,7 +18,6 @@ use Psalm\Internal\Type\TypeAlias;
 use Psalm\Internal\Type\TypeParser;
 use Psalm\Internal\Type\TypeTokenizer;
 use Psalm\Type;
-use function array_column;
 use function array_unique;
 use function trim;
 use function substr_count;
@@ -239,13 +237,13 @@ class CommentAnalyzer
             }
 
             $var_comment->psalm_internal = reset($parsed_docblock->tags['psalm-internal']);
-
-            if (!$var_comment->internal) {
-                throw new DocblockParseException('@psalm-internal annotation used without @internal');
-            }
+            $var_comment->internal = true;
         }
     }
 
+    /**
+     * @psalm-pure
+     */
     private static function sanitizeDocblockType(string $docblock_type) : string
     {
         $docblock_type = preg_replace('@^[ \t]*\*@m', '', $docblock_type);
@@ -467,6 +465,21 @@ class CommentAnalyzer
             }
         }
 
+        if (isset($parsed_docblock->tags['psalm-self-out'])) {
+            foreach ($parsed_docblock->tags['psalm-self-out'] as $offset => $param) {
+                $line_parts = self::splitDocLine($param);
+
+                if (count($line_parts) > 0) {
+                    $line_parts[0] = str_replace("\n", '', preg_replace('@^[ \t]*\*@m', '', $line_parts[0]));
+
+                    $info->self_out = [
+                        'type' => str_replace("\n", '', $line_parts[0]),
+                        'line_number' => $comment->getLine() + substr_count($comment_text, "\n", 0, $offset),
+                    ];
+                }
+            }
+        }
+
         if (isset($parsed_docblock->tags['psalm-flow'])) {
             foreach ($parsed_docblock->tags['psalm-flow'] as $param) {
                 $info->flows[] = trim($param);
@@ -516,10 +529,8 @@ class CommentAnalyzer
                     $info->taint_source_types[] = $param_parts[0];
                 }
             }
-        }
-
-        // support for MediaWiki taint plugin
-        if (isset($parsed_docblock->tags['return-taint'])) {
+        } elseif (isset($parsed_docblock->tags['return-taint'])) {
+            // support for MediaWiki taint plugin
             foreach ($parsed_docblock->tags['return-taint'] as $param) {
                 $param_parts = preg_split('/\s+/', trim($param));
 
@@ -616,10 +627,7 @@ class CommentAnalyzer
                 throw new DocblockParseException('@psalm-internal annotation used without specifying namespace');
             }
             $info->psalm_internal = reset($parsed_docblock->tags['psalm-internal']);
-
-            if (! $info->internal) {
-                throw new DocblockParseException('@psalm-internal annotation used without @internal');
-            }
+            $info->internal = true;
         }
 
         if (isset($parsed_docblock->tags['psalm-suppress'])) {
@@ -749,6 +757,10 @@ class CommentAnalyzer
 
         if (isset($parsed_docblock->tags['psalm-external-mutation-free'])) {
             $info->external_mutation_free = true;
+        }
+
+        if (isset($parsed_docblock->tags['no-named-arguments'])) {
+            $info->no_named_args = true;
         }
 
         $info->ignore_nullable_return = isset($parsed_docblock->tags['psalm-ignore-nullable-return']);
@@ -907,6 +919,10 @@ class CommentAnalyzer
             $info->final = true;
         }
 
+        if (isset($parsed_docblock->tags['psalm-consistent-constructor'])) {
+            $info->consistent_constructor = true;
+        }
+
         if (isset($parsed_docblock->tags['psalm-internal'])) {
             $psalm_internal = reset($parsed_docblock->tags['psalm-internal']);
             if ($psalm_internal) {
@@ -915,20 +931,26 @@ class CommentAnalyzer
                 throw new DocblockParseException('psalm-internal annotation used without specifying namespace');
             }
 
-            if (! $info->internal) {
-                throw new DocblockParseException('@psalm-internal annotation used without @internal');
-            }
+            $info->internal = true;
         }
 
         if (isset($parsed_docblock->tags['mixin'])) {
-            $mixin = trim(reset($parsed_docblock->tags['mixin']));
-            $doc_line_parts = self::splitDocLine($mixin);
-            $mixin = $doc_line_parts[0];
+            foreach ($parsed_docblock->tags['mixin'] as $rawMixin) {
+                $mixin = trim($rawMixin);
+                $doc_line_parts = self::splitDocLine($mixin);
+                $mixin = $doc_line_parts[0];
 
-            if ($mixin) {
-                $info->mixin = $mixin;
-            } else {
-                throw new DocblockParseException('@mixin annotation used without specifying class');
+                if ($mixin) {
+                    $info->mixins[] = $mixin;
+                } else {
+                    throw new DocblockParseException('@mixin annotation used without specifying class');
+                }
+            }
+
+            // backwards compatibility
+            if ($info->mixins) {
+                /** @psalm-suppress DeprecatedProperty */
+                $info->mixin = reset($info->mixins);
             }
         }
 
@@ -971,9 +993,13 @@ class CommentAnalyzer
         }
 
         if (isset($parsed_docblock->tags['psalm-import-type'])) {
-            foreach ($parsed_docblock->tags['psalm-import-type'] as $imported_type_entry) {
-                /** @psalm-suppress InvalidPropertyAssignmentValue */
-                $info->imported_types[] = preg_split('/[\s]+/', $imported_type_entry);
+            foreach ($parsed_docblock->tags['psalm-import-type'] as $offset => $imported_type_entry) {
+                $info->imported_types[] = [
+                    'line_number' => $comment->getLine() + substr_count($comment->getText(), "\n", 0, $offset),
+                    'start_offset' => $comment->getFilePos() + $offset,
+                    'end_offset' => $comment->getFilePos() + $offset + strlen($imported_type_entry),
+                    'parts' => self::splitDocLine($imported_type_entry) ?: []
+                ];
             }
         }
 
@@ -1022,6 +1048,10 @@ class CommentAnalyzer
 
                 // replace array bracket contents
                 $method_entry = preg_replace('/\[([0-9a-zA-Z_\'\" ]+,)*([0-9a-zA-Z_\'\" ]+)\]/', '[]', $method_entry);
+
+                if (!$method_entry) {
+                    throw new DocblockParseException('No @method entry specified');
+                }
 
                 try {
                     $parse_tree_creator = new ParseTreeCreator(
@@ -1078,7 +1108,9 @@ class CommentAnalyzer
                                 'Badly-formatted @method string ' . $method_entry . ' - ' . $e
                             );
                         }
-                        $docblock_lines[] = '@param \\' . $param_type . ' '
+
+                        $param_type_string = $param_type->toNamespacedString('\\', [], null, false);
+                        $docblock_lines[] = '@param ' . $param_type_string . ' '
                             . ($method_tree_child->variadic ? '...' : '')
                             . $method_tree_child->name;
                     }
@@ -1095,7 +1127,10 @@ class CommentAnalyzer
                 $php_string = '<?php class A { ' . $function_docblock . ' public ' . $function_string . '{} }';
 
                 try {
-                    $statements = \Psalm\Internal\Provider\StatementsProvider::parseStatements($php_string);
+                    $statements = \Psalm\Internal\Provider\StatementsProvider::parseStatements(
+                        $php_string,
+                        $codebase->php_major_version . '.' . $codebase->php_minor_version
+                    );
                 } catch (\Exception $e) {
                     throw new DocblockParseException('Badly-formatted @method string ' . $method_entry);
                 }
@@ -1206,11 +1241,13 @@ class CommentAnalyzer
     }
 
     /**
-     * @param  string $return_block
+     * @param string $return_block
      *
      * @throws DocblockParseException if an invalid string is found
      *
-     * @return array<string>
+     * @return list<string>
+     *
+     * @psalm-pure
      */
     public static function splitDocLine($return_block)
     {
@@ -1321,7 +1358,6 @@ class CommentAnalyzer
                 $remaining = trim(preg_replace('@^[ \t]*\* *@m', ' ', substr($return_block, $i + 1)));
 
                 if ($remaining) {
-                    /** @var array<string> */
                     return array_merge([rtrim($type)], preg_split('/[ \s]+/', $remaining));
                 }
 
@@ -1377,6 +1413,8 @@ class CommentAnalyzer
      * @param array<int, string> $lines
      *
      * @return list<string>
+     *
+     * @psalm-pure
      */
     private static function extractAllParamNames(array $lines)
     {

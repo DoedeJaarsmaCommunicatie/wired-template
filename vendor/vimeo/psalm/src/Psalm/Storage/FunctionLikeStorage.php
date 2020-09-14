@@ -27,14 +27,9 @@ abstract class FunctionLikeStorage
     public $params = [];
 
     /**
-     * @var array<string, Type\Union|null>
+     * @var array<string, bool>
      */
-    public $param_types = [];
-
-    /**
-     * @var array<int, Type\Union|null>
-     */
-    public $param_out_types = [];
+    public $param_lookup = [];
 
     /**
      * @var Type\Union|null
@@ -72,14 +67,9 @@ abstract class FunctionLikeStorage
     public $deprecated;
 
     /**
-     * @var ?bool
+     * @var string
      */
-    public $internal;
-
-    /**
-     * @var null|string
-     */
-    public $psalm_internal;
+    public $internal = '';
 
     /**
      * @var bool
@@ -208,6 +198,11 @@ abstract class FunctionLikeStorage
      * @var array<int, string>
      */
     public $return_source_params = [];
+
+    /**
+     * @var bool
+     */
+    public $allow_named_arg_calls = true;
 
     public function __toString()
     {
